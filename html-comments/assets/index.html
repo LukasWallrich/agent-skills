@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>html-comments — shared assets</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:40em;margin:4em auto;padding:0 1em}code{background:#f1f3f5;padding:1px 4px;border-radius:3px}pre{background:#f8f9fa;padding:1em;border-radius:6px;overflow-x:auto}</style>
+<h1>html-comments</h1>
+<p>This host serves the canonical copy of the reviewer comment/suggestion overlay used by
+static HTML reports — <code>html-comments.js</code> and <code>html-comments.css</code>.
+Pages load them from here, so every document runs the same version and a fix reaches all of
+them at once.</p>
+<pre><code>&lt;script&gt;
+window.HC_CONFIG = { endpoint: 'YOUR_APPS_SCRIPT_URL', project: 'UNIQUE-PROJECT-SLUG' };
+var BASE = location.origin + '/';   // this host
+var l = document.createElement('link');
+l.rel = 'stylesheet'; l.href = BASE + 'html-comments.css';
+document.head.appendChild(l);
+var s = document.createElement('script');
+s.src = BASE + 'html-comments.js';
+document.head.appendChild(s);
+&lt;/script&gt;</code></pre>
+<p>Source and setup instructions:
+<a href="https://github.com/LukasWallrich/agent-skills">github.com/LukasWallrich/agent-skills</a>
+— edit <code>assets/</code>, then publish with <code>bin/publish.sh</code>.</p>
