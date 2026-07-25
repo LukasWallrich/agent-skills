@@ -44,8 +44,9 @@ and writes into your Google Sheet, so don't point it at someone else's.
 Downloads academic PDFs by DOI for claim verification, trying, in order: local cache, OSF
 preprints, Unpaywall, repository landing-page scraping, Google Scholar via SerpAPI, and
 headless-browser fetching. `institutional_fetch.py` handles paywalled papers your library
-subscribes to, fetching them through your logged-in Chrome session (direct publisher PDFs,
-or EBSCOhost — set `INSTITUTION_EBSCO_HOME` to your library's entry URL).
+subscribes to, fetching them through your logged-in real Chrome (macOS: it drives Chrome via
+`osascript`, since headless browsers are Cloudflare-flagged). Set
+`INSTITUTION_EBSCO_PROFILE` to your library's EBSCO cluster id for the EBSCO route.
 
 **Sci-Hub is off by default** and only runs with an explicit `--scihub`. It hosts
 copyrighted papers without publisher permission; legality depends on your jurisdiction and
