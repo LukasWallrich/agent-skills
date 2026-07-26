@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  var HC_VERSION = '2026-07-26.2';
+  var HC_VERSION = '2026-07-26.4';
 
   /* ------------------------------------------------------------------ *
    * 0. Config capture (currentScript is only valid at top-level exec)  *
@@ -597,10 +597,10 @@
       });
     }));
 
-    // Identity row — posting anonymously should be a visible, deliberate state,
-    // not something you discover after the fact in your own comment.
+    // A name is required for every post; keep that state explicit.
     UI.whoInput = el('input', { class: 'hc-who-input', type: 'text',
-      placeholder: 'Add your name', value: getName() });
+      placeholder: 'Your name (required)', value: getName(), required: 'required',
+      'aria-required': 'true', autocomplete: 'name' });
     UI.whoInput.addEventListener('input', function () {
       setName(UI.whoInput.value.trim());
       UI.whoInput.classList.remove('hc-invalid');
@@ -633,7 +633,23 @@
     if (!UI.who) return;
     var named = !!getName();
     UI.who.classList.toggle('hc-who-anon', !named);
-    UI.who.firstChild.textContent = named ? 'You:' : 'Posting as Anonymous —';
+    UI.who.firstChild.textContent = named ? 'You:' : 'Name required —';
+  }
+
+  function syncViewportHeight() {
+    var vv = window.visualViewport;
+    var h = vv ? vv.height : window.innerHeight;
+    if (h) document.documentElement.style.setProperty('--hc-vv-height', h + 'px');
+    document.documentElement.style.setProperty('--hc-vv-offset-top', (vv ? vv.offsetTop : 0) + 'px');
+    if (lastFocusedInput) keepFocusedInputVisible(lastFocusedInput);
+  }
+
+  var lastFocusedInput = null;
+  function keepFocusedInputVisible(target) {
+    if (!target || !target.matches || !target.matches('input, textarea')) return;
+    setTimeout(function () {
+      try { target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' }); } catch (e) {}
+    }, 80);
   }
 
   function showBanner(msg) {
@@ -929,12 +945,25 @@
     var viewportBottom = window.scrollY + window.innerHeight;
     // Prefer the natural reading order (below the selection), falling back
     // above only when the toolbar would otherwise leave the viewport.
-    var top = below + UI.toolbar.offsetHeight <= viewportBottom - 8
-      ? below : Math.max(window.scrollY + 4, above);
-    var left = window.scrollX + rect.left;
-    left = Math.min(left, window.scrollX + document.documentElement.clientWidth - UI.toolbar.offsetWidth - 8);
+    var mobile = window.matchMedia && window.matchMedia('(max-width: 899px)').matches;
+    var top, left;
+    if (mobile) {
+      var belowViewport = rect.bottom + 8;
+      var aboveViewport = rect.top - UI.toolbar.offsetHeight - 8;
+      top = belowViewport + UI.toolbar.offsetHeight <= window.innerHeight - 8
+        ? belowViewport : Math.max(4, aboveViewport);
+      top = Math.min(top, window.innerHeight - UI.toolbar.offsetHeight - 4);
+      left = Math.max(4, Math.min(rect.left,
+        document.documentElement.clientWidth - UI.toolbar.offsetWidth - 4));
+    } else {
+      top = below + UI.toolbar.offsetHeight <= viewportBottom - 8
+        ? below : Math.max(window.scrollY + 4, above);
+      left = window.scrollX + rect.left;
+      left = Math.min(left, window.scrollX + document.documentElement.clientWidth - UI.toolbar.offsetWidth - 8);
+      left = Math.max(4, left);
+    }
     UI.toolbar.style.top = top + 'px';
-    UI.toolbar.style.left = Math.max(4, left) + 'px';
+    UI.toolbar.style.left = left + 'px';
   }
 
   function openComposer(kind) {
@@ -961,7 +990,9 @@
       frag.push(textArea);
     }
 
-    var nameInput = el('input', { class: 'hc-name', type: 'text', placeholder: 'Your name' });
+    var nameInput = el('input', { class: 'hc-name', type: 'text',
+      placeholder: 'Your name (required)', required: 'required',
+      'aria-required': 'true', autocomplete: 'name' });
     nameInput.value = getName();
     frag.push(nameInput);
 
@@ -979,6 +1010,20 @@
       onclick: doSubmit });
     var cancel = el('button', { class: 'hc-btn', text: 'Cancel',
       onclick: function () { clearComposer(); } });
+
+    function syncSubmitState() {
+      var disabled = !nameInput.value.trim();
+      submit.disabled = disabled;
+      submit.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    }
+    nameInput.addEventListener('input', function () {
+      var name = nameInput.value.trim();
+      setName(name);
+      if (UI.whoInput) { UI.whoInput.value = name; renderWho(); }
+      nameInput.classList.remove('hc-invalid');
+      syncSubmitState();
+    });
+    syncSubmitState();
 
     // Cmd/Ctrl+Enter submits from any field in the composer.
     [replArea, textArea, nameInput].forEach(function (f) {
@@ -1078,7 +1123,17 @@
 
   function init() {
     buildShell();
-    document.addEventListener('mouseup', onMouseUp);
+    syncViewportHeight();
+    window.addEventListener('resize', syncViewportHeight, { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', syncViewportHeight, { passive: true });
+      window.visualViewport.addEventListener('scroll', syncViewportHeight, { passive: true });
+    }
+    UI.panel.addEventListener('focusin', function (e) {
+      lastFocusedInput = e.target;
+      keepFocusedInputVisible(e.target);
+    });
+    document.addEventListener('pointerup', onMouseUp, true);
     if (DEBUG_ROWS) {
       try { window.__hcInjectRows(JSON.parse(DEBUG_ROWS)); } catch (e) {}
     }

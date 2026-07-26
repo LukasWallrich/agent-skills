@@ -10,6 +10,8 @@
   --hc-muted: #6b7280;
   --hc-border: #e2e6ea;
   --hc-panel-w: 340px;
+  --hc-vv-height: 100vh;
+  --hc-vv-offset-top: 0px;
   --hc-hl: #fff3b0;
   --hc-hl-hover: #ffe873;
 }
@@ -52,7 +54,10 @@ mark.hc-del {
   line-height: 1.45;
   color: var(--hc-fg);
 }
-#hc-root *, #hc-root *::before, #hc-root *::after { box-sizing: border-box; }
+#hc-root *, #hc-root *::before, #hc-root *::after,
+.hc-toolbar, .hc-toolbar *, .hc-composer, .hc-composer *,
+.hc-toolbar *::before, .hc-toolbar *::after,
+.hc-composer *::before, .hc-composer *::after { box-sizing: border-box; }
 #hc-root button { font-family: inherit; }
 
 /* ---- Floating toggle button ---- */
@@ -95,9 +100,10 @@ mark.hc-del {
 /* ---- Sidebar panel ---- */
 .hc-panel {
   position: fixed;
-  top: 0;
+  top: var(--hc-vv-offset-top, 0px);
   right: 0;
-  height: 100vh;
+  height: var(--hc-vv-height, 100vh);
+  max-height: var(--hc-vv-height, 100vh);
   width: var(--hc-panel-w);
   max-width: 92vw;
   background: var(--hc-bg);
@@ -171,7 +177,7 @@ mark.hc-del {
   font-weight: 600;
 }
 
-.hc-list { flex: 1; overflow-y: auto; padding: 10px 12px; }
+.hc-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 12px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 
 /* ---- Empty state ---- */
 .hc-empty { text-align: center; color: var(--hc-muted); padding: 30px 12px; }
@@ -308,6 +314,8 @@ mark.hc-del {
   border-radius: 8px;
   padding: 4px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, .3);
+  touch-action: manipulation;
+  user-select: none;
 }
 .hc-tb-btn {
   border: none;
@@ -325,8 +333,10 @@ mark.hc-del {
 .hc-composer {
   position: absolute;
   z-index: 2147483002;
-  width: 320px;
-  max-width: 92vw;
+  width: min(320px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(var(--hc-vv-height, 100vh) - 16px);
+  overflow-y: auto;
   background: #fff;
   border: 1px solid var(--hc-border);
   border-radius: 10px;
@@ -340,12 +350,15 @@ mark.hc-del {
 .hc-lbl { display: block; font-size: 11px; color: var(--hc-muted); margin: 6px 0 2px; text-transform: uppercase; letter-spacing: .03em; }
 .hc-ta, .hc-name {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border: 1px solid var(--hc-border);
   border-radius: 6px;
   padding: 7px 8px;
   font-size: 13.5px;
   font-family: inherit;
   resize: vertical;
+  box-sizing: border-box;
 }
 .hc-ta:focus, .hc-name:focus { outline: 2px solid rgba(37, 99, 235, .35); border-color: var(--hc-accent); }
 .hc-name { margin-top: 8px; }
@@ -368,6 +381,7 @@ mark.hc-del {
   .hc-toolbar {
     position: fixed;
     max-width: calc(100vw - 16px);
+    flex-wrap: wrap;
   }
 }
 
