@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  var HC_VERSION = '2026-07-26.4';
+  var HC_VERSION = '2026-07-26.5';
 
   /* ------------------------------------------------------------------ *
    * 0. Config capture (currentScript is only valid at top-level exec)  *
@@ -36,6 +36,7 @@
   var LS = {
     name: 'hc-name',
     outbox: 'hc-outbox-' + PROJECT,
+    cache: 'hc-cache-' + PROJECT,
     showSug: 'hc-showsug-' + PROJECT,
     drafts: 'hc-drafts-' + PROJECT
   };
@@ -124,12 +125,40 @@
   /* ------------------------------------------------------------------ *
    * 2. Networking + outbox (fire-and-forget with retry)               *
    * ------------------------------------------------------------------ */
+  // Offline durability rests on two localStorage stores:
+  //   outbox — records written here but not yet accepted by the server
+  //   cache  — the last successful server read
+  // The rendered log is always cache + outbox, so a reviewer working with no
+  // network (on a plane, say) still sees the document's existing comments and
+  // everything they add, across reloads, until the queue drains.
   function readOutbox() {
     try { return JSON.parse(localStorage.getItem(LS.outbox) || '[]'); }
     catch (e) { return []; }
   }
   function writeOutbox(arr) {
     try { localStorage.setItem(LS.outbox, JSON.stringify(arr)); } catch (e) {}
+    renderPending();
+  }
+
+  function readCache() {
+    try { return JSON.parse(localStorage.getItem(LS.cache) || '[]'); }
+    catch (e) { return []; }
+  }
+  function writeCache(rows) {
+    try { localStorage.setItem(LS.cache, JSON.stringify(rows || [])); } catch (e) {}
+  }
+
+  // The visible log: server rows plus anything still queued. itemIds are unique
+  // per record, so deduping on them also absorbs a replayed post whose response
+  // was lost (the server has the row; our outbox copy is the same record).
+  function composeRows(serverRows) {
+    var seen = {}, out = [];
+    (serverRows || []).concat(readOutbox()).forEach(function (row) {
+      if (!row || !row.itemId || seen[row.itemId]) return;
+      seen[row.itemId] = true;
+      out.push(row);
+    });
+    return out.sort(function (a, b) { return Date.parse(a.ts) - Date.parse(b.ts); });
   }
 
   function rawPost(payload) {
@@ -157,7 +186,7 @@
 
   function flushOutbox() {
     var box = readOutbox();
-    if (!box.length) return Promise.resolve();
+    if (!box.length) return Promise.resolve(0);
     var remaining = [];
     return box.reduce(function (chain, payload) {
       return chain.then(function () {
@@ -167,6 +196,7 @@
       });
     }, Promise.resolve()).then(function () {
       writeOutbox(remaining);
+      return box.length - remaining.length;
     });
   }
 
@@ -436,7 +466,7 @@
     rows.forEach(function (row) {
       var note = parseNote(row);
       var rec = {
-        itemId: row.itemId, vote: row.vote, ts: row.ts,
+        itemId: row.itemId, vote: row.vote, ts: note.cts || row.ts,
         voter: row.voter || '', session: row.session || '', note: note
       };
       switch (row.vote) {
@@ -570,9 +600,16 @@
     // Sidebar panel
     UI.panel = el('aside', { class: 'hc-panel', 'aria-hidden': 'true' });
 
+    UI.pending = el('button', {
+      class: 'hc-pending', style: 'display:none',
+      title: 'Not yet uploaded — click to retry now',
+      onclick: function () { refresh(); }
+    });
+
     var header = el('div', { class: 'hc-head' }, [
       el('div', { class: 'hc-title', text: 'Comments' }),
       el('div', { class: 'hc-head-btns' }, [
+        UI.pending,
         el('button', { class: 'hc-icon-btn', title: 'Refresh', text: '↻',
           onclick: function () { refresh(); } }),
         el('button', { class: 'hc-icon-btn', title: 'Close', text: '×',
@@ -623,10 +660,21 @@
     document.body.appendChild(root);
 
     renderWho();
+    renderPending();
 
     // Banner container (top)
     UI.banner = el('div', { class: 'hc-banner', style: 'display:none' });
     root.appendChild(UI.banner);
+  }
+
+  // Queued-but-unsent count. Silence here would look exactly like a successful
+  // upload, which is the one thing an offline reviewer must not have to guess at.
+  function renderPending() {
+    if (!UI.pending) return;
+    var n = readOutbox().length;
+    UI.pending.style.display = n ? '' : 'none';
+    UI.pending.textContent = n === 1 ? '1 pending' : n + ' pending';
+    if (UI.toggleBtn) UI.toggleBtn.classList.toggle('hc-pending-dot', n > 0);
   }
 
   function renderWho() {
@@ -652,11 +700,22 @@
     }, 80);
   }
 
+  // The offline banner stays up for as long as there is no network, so unlike a
+  // transient warning it would otherwise sit on top of the panel header for the
+  // whole session. Publish its height and let the panel start below it.
+  function syncBannerHeight() {
+    var h = (UI.banner && UI.banner.style.display !== 'none') ? UI.banner.offsetHeight : 0;
+    document.documentElement.style.setProperty('--hc-banner-h', h + 'px');
+  }
   function showBanner(msg) {
     UI.banner.textContent = msg;
     UI.banner.style.display = 'block';
+    syncBannerHeight();
   }
-  function hideBanner() { UI.banner.style.display = 'none'; }
+  function hideBanner() {
+    UI.banner.style.display = 'none';
+    syncBannerHeight();
+  }
 
   function toggleSidebar() {
     if (UI.panel.classList.contains('hc-open')) closeSidebar(); else openSidebar();
@@ -848,17 +907,23 @@
   /* ------------------------------------------------------------------ *
    * 9. Submitting records (optimistic)                                 *
    * ------------------------------------------------------------------ */
-  function pushLocalRow(itemId, vote, note, voter) {
-    ROWS.push({
-      ts: new Date().toISOString(), itemId: itemId, vote: vote,
-      note: JSON.stringify(note), voter: voter || getName(), session: SESSION
-    });
-  }
-
-  function send(itemId, vote, note, voter) {
-    var payload = {
-      project: PROJECT, itemId: itemId, vote: vote,
+  // Show the record immediately and send it. The local row and the payload are
+  // the same object plus `project`, so a row that lands in the outbox re-renders
+  // identically (same ts, same itemId) after a reload with no network.
+  function record(itemId, vote, note, voter) {
+    var ts = new Date().toISOString();
+    // The server stamps its own timestamp on arrival, which for a queued record
+    // is whenever the network came back. Keep the authoring time in the note so
+    // a flight's worth of comments doesn't collapse to the moment of landing.
+    note.cts = ts;
+    var row = {
+      ts: ts, itemId: itemId, vote: vote,
       note: JSON.stringify(note), voter: voter || getName() || '', session: SESSION
+    };
+    ROWS.push(row);
+    var payload = {
+      project: PROJECT, ts: row.ts, itemId: row.itemId, vote: row.vote,
+      note: row.note, voter: row.voter, session: row.session
     };
     postRecord(payload);
   }
@@ -869,32 +934,28 @@
     if (kind === 'suggestion') note.replacement = replacement || '';
     setName(voter);
     if (UI.whoInput) { UI.whoInput.value = voter; renderWho(); }
-    pushLocalRow(itemId, kind, note, voter);
-    send(itemId, kind, note, voter);
+    record(itemId, kind, note, voter);
     renderAll();
   }
 
   function submitReply(threadId, text) {
     var itemId = genId();
     var note = { v: 1, text: text, parentId: threadId };
-    pushLocalRow(itemId, 'reply', note);
-    send(itemId, 'reply', note);
+    record(itemId, 'reply', note);
     renderAll();
   }
 
   function submitStatus(threadId, vote) {
     var itemId = genId();
     var note = { v: 1, parentId: threadId };
-    pushLocalRow(itemId, vote, note);
-    send(itemId, vote, note);
+    record(itemId, vote, note);
     renderAll();
   }
 
   function submitDelete(threadId, targetId) {
     var itemId = genId();
     var note = { v: 1, parentId: targetId };
-    pushLocalRow(itemId, 'delete', note);
-    send(itemId, 'delete', note);
+    record(itemId, 'delete', note);
     renderAll();
   }
 
@@ -1086,12 +1147,18 @@
     renderSidebar();
   }
 
+  var refreshing = false;
+
   function refresh() {
+    if (refreshing) return Promise.resolve();
+    refreshing = true;
     hideBanner();
-    flushOutbox();
-    fetchRows().then(function (res) {
+    // Drain the queue before reading, so a flushed record comes back in the
+    // same GET rather than living on as an outbox entry until the next refresh.
+    return flushOutbox().then(fetchRows).then(function (res) {
       if (res && res.ok === true) {
-        ROWS = (res.rows || []).slice();
+        writeCache(res.rows || []);
+        ROWS = composeRows(res.rows || []);
         renderAll(true);
       } else if (res && res.ok === false && /unknown action/i.test(res.error || '')) {
         showBanner('Comments backend needs updating (rows action not deployed)');
@@ -1101,8 +1168,16 @@
       }
     }).catch(function (err) {
       console.warn('[html-comments] rows GET failed:', err);
-      showBanner('Comments backend unreachable — showing nothing / your comments will still be saved');
+      // Offline: fall back to the last server read plus the queue, so the
+      // reviewer keeps working with a full picture.
+      ROWS = composeRows(readCache());
       renderAll(true);
+      showBanner(readOutbox().length
+        ? 'Offline — showing the last synced comments plus yours; queued edits upload when you reconnect.'
+        : 'Offline — showing the last synced comments. Anything you add is saved locally and uploads when you reconnect.');
+    }).then(function () {
+      refreshing = false;
+      renderPending();
     });
   }
 
@@ -1134,9 +1209,23 @@
       keepFocusedInputVisible(e.target);
     });
     document.addEventListener('pointerup', onMouseUp, true);
+
+    // Retry the queue whenever the network plausibly came back. Without this the
+    // only trigger is a page load or the Refresh button, so a reviewer who works
+    // offline and never reopens the page leaves comments stranded locally.
+    window.addEventListener('online', function () { refresh(); });
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden && readOutbox().length) refresh();
+    });
+
     if (DEBUG_ROWS) {
       try { window.__hcInjectRows(JSON.parse(DEBUG_ROWS)); } catch (e) {}
+      return;
     }
+    // Paint from local state first: with no network this is the whole session,
+    // and with a network it just avoids an empty sidebar during the round-trip.
+    ROWS = composeRows(readCache());
+    renderAll(true);
     refresh();
   }
 

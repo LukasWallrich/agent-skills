@@ -100,10 +100,12 @@ mark.hc-del {
 /* ---- Sidebar panel ---- */
 .hc-panel {
   position: fixed;
-  top: var(--hc-vv-offset-top, 0px);
+  /* sits below the banner when one is up, so a persistent (offline) banner
+     never covers the panel header */
+  top: calc(var(--hc-vv-offset-top, 0px) + var(--hc-banner-h, 0px));
   right: 0;
-  height: var(--hc-vv-height, 100vh);
-  max-height: var(--hc-vv-height, 100vh);
+  height: calc(var(--hc-vv-height, 100vh) - var(--hc-banner-h, 0px));
+  max-height: calc(var(--hc-vv-height, 100vh) - var(--hc-banner-h, 0px));
   width: var(--hc-panel-w);
   max-width: 92vw;
   background: var(--hc-bg);
@@ -130,7 +132,23 @@ mark.hc-del {
   border-bottom: 1px solid var(--hc-border);
 }
 .hc-title { font-weight: 700; font-size: 15px; }
-.hc-head-btns { display: flex; gap: 4px; }
+.hc-head-btns { display: flex; align-items: center; gap: 4px; }
+
+/* Records saved locally but not yet accepted by the server (e.g. written offline) */
+.hc-pending {
+  border: 1px solid #f59e0b;
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 999px;
+  padding: 2px 9px;
+  margin-right: 4px;
+  font: 600 11px/1.5 inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hc-pending:hover { background: #fde68a; }
+/* mirror it on the closed-sidebar bubble, which is all you see most of the time */
+.hc-toggle.hc-pending-dot { box-shadow: 0 0 0 3px #f59e0b, 0 6px 18px rgba(0, 0, 0, .18); }
 .hc-icon-btn {
   border: none;
   background: transparent;
@@ -414,6 +432,8 @@ mark.hc-del {
   .hc-who-anon { background: #3a2f14; }
   .hc-who-anon .hc-who-lbl { color: #f0c36d; }
   .hc-icon-btn:hover, .hc-btn:hover { background: #2c333b; }
+  .hc-pending { background: #3a2f14; color: #f0c36d; border-color: #7c5c14; }
+  .hc-pending:hover { background: #4a3c18; }
   .hc-thread, .hc-composer { background: #23282e; }
   .hc-thread.hc-resolved { background: #202429; }
   .hc-reply { background: #202429; }

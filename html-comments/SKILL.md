@@ -124,6 +124,25 @@ until it is sent — Resolve and Delete sit on a separate row below. Unsubmitted
 also kept in localStorage per thread. Names are remembered in localStorage; no auth — the
 endpoint is public-by-URL, so don't use it for sensitive content.
 
+## Working offline
+
+Reviewing on a plane works, with one precondition: **the page must be opened while online**,
+because the overlay itself is fetched from `<ASSET-BASE>` and served with
+`max-age=0, must-revalidate`, so a reload with no network gets no overlay at all. Leave the
+tab open (a discarded background tab reloads from the network on return).
+
+Given that, the overlay keeps two localStorage stores per project — `hc-cache-<project>`
+(the last successful server read) and `hc-outbox-<project>` (records not yet accepted) — and
+always renders **cache + outbox**. So offline, a reviewer sees the existing comments and
+everything they add, across reloads, with a "N pending" chip in the panel header and a
+banner explaining the state. The queue is retried on page load, on the `online` event, on
+tab re-focus, and when the chip or ↻ is clicked. Authoring time is preserved in the note's
+`cts` field, since the server stamps rows at the moment they arrive, not when they were
+written.
+
+Records carry unique `itemId`s and the overlay dedups on them, so a post the server accepted
+but whose response was lost renders once even though the replay leaves two rows in the sheet.
+
 ## Record format (sheet rows)
 
 Standard endpoint columns; `vote` holds the record type (`comment`, `suggestion`, `reply`,
@@ -178,7 +197,8 @@ When asked to apply collected feedback:
 
 ## Debug hooks
 
-`window.__hcInjectRows(rows)` renders fake rows through the real pipeline;
-`window.__hcState()` exposes internal state (including the running version) and
-`window.__hcVersion` the version alone. A missing/old backend shows a banner instead of
-failing silently. Failed POSTs queue in a localStorage outbox and retry on reload.
+`window.__hcInjectRows(rows)` renders fake rows through the real pipeline and skips the
+server read, so injected rows stay put; `window.__hcState()` exposes internal state
+(including the running version) and `window.__hcVersion` the version alone. A missing/old
+backend shows a banner instead of failing silently. See "Working offline" above for how
+failed POSTs are queued and retried.
