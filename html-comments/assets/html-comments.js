@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  var HC_VERSION = '2026-07-25.2';
+  var HC_VERSION = '2026-07-26.1';
 
   /* ------------------------------------------------------------------ *
    * 0. Config capture (currentScript is only valid at top-level exec)  *
@@ -993,11 +993,22 @@
     ].concat(frag));
     document.body.appendChild(UI.composer);
 
-    var top = window.scrollY + rect.bottom + 8;
-    var left = window.scrollX + rect.left;
-    left = Math.min(left, window.scrollX + document.documentElement.clientWidth - UI.composer.offsetWidth - 8);
+    var mobile = window.matchMedia && window.matchMedia('(max-width: 899px)').matches;
+    var top, left;
+    if (mobile) {
+      // CSS makes the composer fixed on small screens. Center it after layout
+      // so it cannot be hidden below the selection or browser chrome.
+      top = Math.max(8, Math.min((window.innerHeight - UI.composer.offsetHeight) / 2,
+        window.innerHeight - UI.composer.offsetHeight - 8));
+      left = Math.max(8, (document.documentElement.clientWidth - UI.composer.offsetWidth) / 2);
+    } else {
+      top = window.scrollY + rect.bottom + 8;
+      left = window.scrollX + rect.left;
+      left = Math.min(left, window.scrollX + document.documentElement.clientWidth - UI.composer.offsetWidth - 8);
+      left = Math.max(4, left);
+    }
     UI.composer.style.top = top + 'px';
-    UI.composer.style.left = Math.max(4, left) + 'px';
+    UI.composer.style.left = left + 'px';
     if (replArea) {
       // Word-style: the original text is pre-selected, so typing replaces it
       // outright, while arrow keys / a click drop you into editing it in place.

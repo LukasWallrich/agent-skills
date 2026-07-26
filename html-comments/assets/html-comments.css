@@ -352,6 +352,25 @@ mark.hc-del {
 .hc-invalid { border-color: #ef4444; }
 .hc-composer-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 
+/* On phones, anchor-relative absolute positioning can put the composer
+   underneath the browser chrome or partly outside the viewport. Keep it as a
+   readable, scrollable viewport dialog instead. */
+@media (max-width: 899px) {
+  .hc-composer {
+    position: fixed;
+    top: 8px !important;
+    left: 8px !important;
+    width: calc(100vw - 16px);
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+  }
+  .hc-toolbar {
+    position: fixed;
+    max-width: calc(100vw - 16px);
+  }
+}
+
 /* ---- Banner ---- */
 .hc-banner {
   position: fixed;
@@ -370,7 +389,7 @@ mark.hc-del {
 
 /* ---- Dark mode (page-driven) ---- */
 @media (prefers-color-scheme: dark) {
-  #hc-root {
+  :root {
     --hc-bg: #1b1f24;
     --hc-fg: #e5e9ee;
     --hc-muted: #9aa4af;
