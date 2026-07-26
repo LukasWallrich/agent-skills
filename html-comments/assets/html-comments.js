@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  var HC_VERSION = '2026-07-26.1';
+  var HC_VERSION = '2026-07-26.2';
 
   /* ------------------------------------------------------------------ *
    * 0. Config capture (currentScript is only valid at top-level exec)  *
@@ -856,8 +856,6 @@
     pushLocalRow(itemId, kind, note, voter);
     send(itemId, kind, note, voter);
     renderAll();
-    openSidebar();
-    setTimeout(function () { focusThread(itemId, true); }, 60);
   }
 
   function submitReply(threadId, text) {
@@ -926,8 +924,13 @@
         onclick: function () { openComposer('suggestion'); } })
     ]);
     document.body.appendChild(UI.toolbar);
-    var top = window.scrollY + rect.top - UI.toolbar.offsetHeight - 8;
-    if (top < window.scrollY + 4) top = window.scrollY + rect.bottom + 8;
+    var below = window.scrollY + rect.bottom + 8;
+    var above = window.scrollY + rect.top - UI.toolbar.offsetHeight - 8;
+    var viewportBottom = window.scrollY + window.innerHeight;
+    // Prefer the natural reading order (below the selection), falling back
+    // above only when the toolbar would otherwise leave the viewport.
+    var top = below + UI.toolbar.offsetHeight <= viewportBottom - 8
+      ? below : Math.max(window.scrollY + 4, above);
     var left = window.scrollX + rect.left;
     left = Math.min(left, window.scrollX + document.documentElement.clientWidth - UI.toolbar.offsetWidth - 8);
     UI.toolbar.style.top = top + 'px';
