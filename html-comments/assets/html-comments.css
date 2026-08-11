@@ -119,9 +119,39 @@ mark.hc-del {
 }
 .hc-panel.hc-open { transform: translateX(0); }
 
-/* push page content aside on wide screens only */
+/* Push mode (the default) resizes the page instead of covering its right-hand
+   340px. Below the cutoff the panel is nearly full width, so pushing would
+   leave too little content to read and the overlay behaviour is kept.
+   Class hooks, both set by the JS on <html>: .hc-panel-open while the panel is
+   open, .hc-push while push mode is selected. */
 @media (min-width: 900px) {
-  html.hc-panel-open body { transition: margin-right .22s ease; }
+  body { transition: margin-right .22s ease; }
+  html.hc-panel-open.hc-push body { margin-right: var(--hc-panel-w); }
+}
+.hc-icon-btn.hc-active { color: var(--hc-accent); background: #eef2ff; }
+.hc-push-btn { font-size: 15px; }
+
+/* ---- Config error banner (overlay disabled) ---- */
+.hc-config-error {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2147483647;
+  background: #b91c1c;
+  color: #fff;
+  padding: 8px 14px;
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  text-align: center;
+}
+
+/* ---- Storage failure notice (panel header area) ---- */
+.hc-storage-note {
+  padding: 6px 14px;
+  background: #fef3c7;
+  color: #92400e;
+  border-bottom: 1px solid #fcd34d;
+  font-size: 12px;
 }
 
 .hc-head {
@@ -437,6 +467,8 @@ mark.hc-del {
   .hc-thread, .hc-composer { background: #23282e; }
   .hc-thread.hc-resolved { background: #202429; }
   .hc-reply { background: #202429; }
+  .hc-storage-note { background: #3a2f14; color: #f0c36d; border-bottom-color: #7c5c14; }
+  .hc-icon-btn.hc-active { background: #1e2a4a; color: #93b4ff; }
 }
 
 /* ---- Print: hide everything from this overlay ---- */

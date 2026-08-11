@@ -1,6 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>html-comments — shared assets</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>">
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:40em;margin:4em auto;padding:0 1em}code{background:#f1f3f5;padding:1px 4px;border-radius:3px}pre{background:#f8f9fa;padding:1em;border-radius:6px;overflow-x:auto}</style>
 <h1>html-comments</h1>
 <p>This host serves the canonical copy of the reviewer comment/suggestion overlay used by
@@ -9,7 +10,8 @@ Pages load them from here, so every document runs the same version and a fix rea
 them at once.</p>
 <pre><code>&lt;script&gt;
 window.HC_CONFIG = { endpoint: 'YOUR_APPS_SCRIPT_URL', project: 'UNIQUE-PROJECT-SLUG' };
-var BASE = location.origin + '/';   // this host
+// Absolute: the report is usually NOT hosted here. Replace with your own asset host.
+var BASE = 'https://html-comments.surge.sh/';
 var l = document.createElement('link');
 l.rel = 'stylesheet'; l.href = BASE + 'html-comments.css';
 document.head.appendChild(l);

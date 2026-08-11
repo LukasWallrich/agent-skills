@@ -12,7 +12,16 @@
 (function () {
   'use strict';
 
-  var HC_VERSION = '2026-07-26.5';
+  var HC_VERSION = '2026-08-11.2';
+
+  // Loading the overlay twice (e.g. a page that both inlines the script and
+  // loads it from the asset host) would produce two sidebars, two toolbars and
+  // duplicated posts. First one wins.
+  if (window.__hcVersion) {
+    console.warn('[html-comments] already loaded (version ' + window.__hcVersion +
+      '); ignoring this duplicate inclusion.');
+    return;
+  }
 
   /* ------------------------------------------------------------------ *
    * 0. Config capture (currentScript is only valid at top-level exec)  *
@@ -28,13 +37,51 @@
   var PROJECT = (CFG.project || '').trim();
   var DEBUG_ROWS = CFG.debugRows || ''; // optional inline test rows (JSON)
 
+  var VIA_DATASET = !!(SCRIPT && SCRIPT.dataset && SCRIPT.dataset.project);
+
+  // A misconfigured overlay used to fail silently in the console, which reads to
+  // the author exactly like "the comment system is broken". Say what is wrong,
+  // on the page, naming the config path actually in use.
+  function configError(msg) {
+    console.error('[html-comments] ' + msg);
+    function paint() {
+      var b = document.createElement('div');
+      b.className = 'hc-config-error';
+      b.textContent = 'html-comments: ' + msg;
+      // Inline the essentials: the stylesheet may not be loaded either.
+      b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;' +
+        'background:#b91c1c;color:#fff;padding:8px 14px;font:13px/1.4 system-ui,sans-serif;' +
+        'text-align:center';
+      if (document.body) document.body.appendChild(b);
+    }
+    if (document.body) paint();
+    else document.addEventListener('DOMContentLoaded', paint);
+  }
+
+  var WHERE = VIA_DATASET
+    ? 'the data-endpoint/data-project attributes on the script tag'
+    : 'window.HC_CONFIG';
+
   if (!ENDPOINT || !PROJECT) {
-    console.warn('[html-comments] missing data-endpoint or data-project; overlay disabled.');
+    configError('missing ' + (!ENDPOINT && !PROJECT ? 'endpoint and project' :
+      (!ENDPOINT ? 'endpoint' : 'project')) + ' in ' + WHERE + '; overlay disabled.');
+    return;
+  }
+  if (PROJECT === 'UNIQUE-PROJECT-SLUG') {
+    configError('replace the UNIQUE-PROJECT-SLUG placeholder with a real project slug in ' +
+      WHERE + '; overlay disabled.');
+    return;
+  }
+  if (!/^https?:\/\//.test(ENDPOINT)) {
+    configError('endpoint must be a full http(s) URL (got "' + ENDPOINT + '") in ' +
+      WHERE + '; overlay disabled.');
     return;
   }
 
   var LS = {
     name: 'hc-name',
+    // Per-browser, not per-project: it is a reading preference, not document state.
+    push: 'hc-push',
     outbox: 'hc-outbox-' + PROJECT,
     cache: 'hc-cache-' + PROJECT,
     showSug: 'hc-showsug-' + PROJECT,
@@ -74,9 +121,39 @@
       Math.random().toString(36).slice(2, 6);
   }
 
+  // Storage access itself can throw (blocked cookies, some file:// setups,
+  // private modes). Every read/write goes through these so a browser that
+  // refuses storage costs the reviewer durability, not the whole overlay.
+  function safeGet(store, key) {
+    try {
+      var s = window[store];
+      return s ? s.getItem(key) : null;
+    } catch (e) { return null; }
+  }
+  function safeSet(store, key, value) {
+    try {
+      var s = window[store];
+      if (!s) return false;
+      s.setItem(key, value);
+      return true;
+    } catch (e) {
+      if (e && /quota/i.test(String(e.name || '') + String(e.message || ''))) {
+        console.warn('[html-comments] storage full; ' + key + ' not saved:', e);
+        showStorageNote('Local storage is full — offline copies may not be saved.');
+      }
+      return false;
+    }
+  }
+  function safeRemove(store, key) {
+    try {
+      var s = window[store];
+      if (s) s.removeItem(key);
+    } catch (e) {}
+  }
+
   function nowSession() {
-    var s = sessionStorage.getItem('hc-session');
-    if (!s) { s = genId(); sessionStorage.setItem('hc-session', s); }
+    var s = safeGet('sessionStorage', 'hc-session');
+    if (!s) { s = genId(); safeSet('sessionStorage', 'hc-session', s); }
     return s;
   }
   var SESSION = nowSession();
@@ -103,23 +180,23 @@
     return s.length > n ? s.slice(0, n - 1) + '…' : s;
   }
 
-  function getName() { return localStorage.getItem(LS.name) || ''; }
+  function getName() { return safeGet('localStorage', LS.name) || ''; }
   function setName(v) {
-    if (v) localStorage.setItem(LS.name, v);
-    else localStorage.removeItem(LS.name);
+    if (v) safeSet('localStorage', LS.name, v);
+    else safeRemove('localStorage', LS.name);
   }
 
   // Unsubmitted reply drafts, keyed by thread id, so a re-render (or a stray
   // Resolve click, or closing the tab) never silently eats typed text.
   function readDrafts() {
-    try { return JSON.parse(localStorage.getItem(LS.drafts) || '{}'); }
+    try { return JSON.parse(safeGet('localStorage', LS.drafts) || '{}'); }
     catch (e) { return {}; }
   }
   function getDraft(threadId) { return readDrafts()[threadId] || ''; }
   function setDraft(threadId, text) {
     var d = readDrafts();
     if (text) d[threadId] = text; else delete d[threadId];
-    try { localStorage.setItem(LS.drafts, JSON.stringify(d)); } catch (e) {}
+    safeSet('localStorage', LS.drafts, JSON.stringify(d));
   }
 
   /* ------------------------------------------------------------------ *
@@ -132,20 +209,20 @@
   // network (on a plane, say) still sees the document's existing comments and
   // everything they add, across reloads, until the queue drains.
   function readOutbox() {
-    try { return JSON.parse(localStorage.getItem(LS.outbox) || '[]'); }
+    try { return JSON.parse(safeGet('localStorage', LS.outbox) || '[]'); }
     catch (e) { return []; }
   }
   function writeOutbox(arr) {
-    try { localStorage.setItem(LS.outbox, JSON.stringify(arr)); } catch (e) {}
+    safeSet('localStorage', LS.outbox, JSON.stringify(arr));
     renderPending();
   }
 
   function readCache() {
-    try { return JSON.parse(localStorage.getItem(LS.cache) || '[]'); }
+    try { return JSON.parse(safeGet('localStorage', LS.cache) || '[]'); }
     catch (e) { return []; }
   }
   function writeCache(rows) {
-    try { localStorage.setItem(LS.cache, JSON.stringify(rows || [])); } catch (e) {}
+    safeSet('localStorage', LS.cache, JSON.stringify(rows || []));
   }
 
   // The visible log: server rows plus anything still queued. itemIds are unique
@@ -161,13 +238,39 @@
     return out.sort(function (a, b) { return Date.parse(a.ts) - Date.parse(b.ts); });
   }
 
+  var NET_TIMEOUT = 20000;   // ms; a hung request must not wedge refresh forever
+  var FLUSH_SPACING = 1000;  // ms between queued posts (the endpoint rate-limits bursts)
+  var KEEPALIVE_CAP = 60000; // chars; keepalive fetches are capped near 64KB
+
+  // fetch + JSON parse under one abort timeout. The parse has to be inside the
+  // timed window: a server that sends headers and then stalls on the body would
+  // otherwise leave r.json() hanging forever, and with it the refreshing flag.
+  function fetchJSON(url, opts) {
+    var ctl = null;
+    try { ctl = new AbortController(); } catch (e) {}
+    if (ctl) opts.signal = ctl.signal;
+    var timer = setTimeout(function () {
+      if (ctl) try { ctl.abort(); } catch (e) {}
+    }, NET_TIMEOUT);
+    function clear(v) { clearTimeout(timer); return v; }
+    function rethrow(e) { clearTimeout(timer); throw e; }
+    return fetch(url, opts)
+      .then(function (r) { return r.json(); })
+      .then(clear, rethrow);
+  }
+
   function rawPost(payload) {
-    return fetch(ENDPOINT, {
+    var body = JSON.stringify(payload);
+    var opts = {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload),
-      keepalive: true
-    }).then(function (r) { return r.json(); });
+      body: body
+    };
+    // keepalive lets a post survive the page being closed, but browsers cap such
+    // bodies near 64KB and throw outright above it — a long suggestion would
+    // then fail before it ever left.
+    if (body.length < KEEPALIVE_CAP) opts.keepalive = true;
+    return fetchJSON(ENDPOINT, opts);
   }
 
   // Post a record; on network failure, queue it in the outbox for retry.
@@ -184,26 +287,42 @@
     });
   }
 
+  // Drop the given itemIds from the outbox, re-reading it first. A record queued
+  // by postRecord while a flush was in flight must survive: writing back a list
+  // computed from the pre-flush snapshot would silently delete it.
+  function dropFromOutbox(sentIds) {
+    if (!sentIds.length) return;
+    var keep = {};
+    sentIds.forEach(function (id) { keep[id] = true; });
+    writeOutbox(readOutbox().filter(function (p) {
+      return !(p && p.itemId && keep[p.itemId]);
+    }));
+  }
+
   function flushOutbox() {
     var box = readOutbox();
     if (!box.length) return Promise.resolve(0);
-    var remaining = [];
-    return box.reduce(function (chain, payload) {
+    var sent = [];
+    return box.reduce(function (chain, payload, i) {
       return chain.then(function () {
+        // Space the replay out: the endpoint rate-limits bursts, and a queue
+        // fired all at once comes back rejected and re-queues itself.
+        return i === 0 ? null : new Promise(function (r) { setTimeout(r, FLUSH_SPACING); });
+      }).then(function () {
         return rawPost(payload).then(function (res) {
-          if (!res || res.ok !== true) remaining.push(payload);
-        }).catch(function () { remaining.push(payload); });
+          if (res && res.ok === true && payload.itemId) sent.push(payload.itemId);
+        }).catch(function () {});
       });
     }, Promise.resolve()).then(function () {
-      writeOutbox(remaining);
-      return box.length - remaining.length;
+      dropFromOutbox(sent);
+      return sent.length;
     });
   }
 
   function fetchRows() {
     var url = ENDPOINT + (ENDPOINT.indexOf('?') >= 0 ? '&' : '?') +
       'action=rows&project=' + encodeURIComponent(PROJECT);
-    return fetch(url, { method: 'GET' }).then(function (r) { return r.json(); });
+    return fetchJSON(url, { method: 'GET' });
   }
 
   /* ------------------------------------------------------------------ *
@@ -223,6 +342,22 @@
     return false;
   }
 
+  // Block-level elements whose boundaries get a '\n' in the index. Without one,
+  // `<td>A</td><td>B</td>` reads as "AB" and a selection crossing the boundary
+  // yields a quote that exists nowhere in the document. This list is
+  // deliberately separate from BLOCK_TAGS (which picks the anchor's block
+  // element and must not include generic containers).
+  var SEP_TAGS = /^(P|LI|TD|TH|DD|DT|BLOCKQUOTE|FIGCAPTION|CAPTION|PRE|H1|H2|H3|H4|H5|H6|DIV|SECTION|ARTICLE)$/;
+
+  function sepBlockOf(node) {
+    var e = node.parentNode;
+    while (e && e.nodeType === 1) {
+      if (SEP_TAGS.test(e.tagName)) return e;
+      e = e.parentNode;
+    }
+    return null;
+  }
+
   function buildIndex(container) {
     var walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
       acceptNode: function (n) {
@@ -230,8 +365,12 @@
         return n.nodeValue.length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
       }
     });
-    var segs = [], text = '', node;
+    var segs = [], text = '', node, prevBlock = null, first = true;
     while ((node = walker.nextNode())) {
+      var blk = sepBlockOf(node);
+      if (!first && blk !== prevBlock) text += '\n';
+      first = false;
+      prevBlock = blk;
       segs.push({ node: node, start: text.length, end: text.length + node.nodeValue.length });
       text += node.nodeValue;
     }
@@ -259,23 +398,91 @@
   var CTX = 120;       // chars of prefix/suffix
   var BLOCK_CAP = 700; // chars of the surrounding block element's text
 
-  var BLOCK_TAGS = /^(P|LI|TD|TH|DD|DT|BLOCKQUOTE|FIGCAPTION|CAPTION|PRE|H1|H2|H3|H4|H5|H6|DIV|SECTION|ARTICLE|BODY)$/;
+  // Real text blocks. Generic containers are deliberately absent: a selection
+  // spanning two paragraphs would otherwise capture a whole section as its
+  // "block". They are used only as a fallback when nothing better exists.
+  var BLOCK_TAGS = /^(P|LI|TD|TH|DD|DT|BLOCKQUOTE|FIGCAPTION|CAPTION|PRE|H1|H2|H3|H4|H5|H6)$/;
+  var BLOCK_FALLBACK_TAGS = /^(DIV|SECTION|ARTICLE|BODY)$/;
 
-  function nearestBlockText(node) {
+  function nearestBlockEl(node) {
     var e = node.nodeType === 1 ? node : node.parentNode;
-    while (e && e.nodeType === 1 && !BLOCK_TAGS.test(e.tagName)) e = e.parentNode;
-    if (!e || e.nodeType !== 1) return '';
-    var t = (e.textContent || '').replace(/\s+/g, ' ').trim();
-    return t.length > BLOCK_CAP ? t.slice(0, BLOCK_CAP) : t;
-  }
-
-  function nearestId(node) {
-    var e = node.nodeType === 1 ? node : node.parentNode;
+    var fallback = null;
     while (e && e.nodeType === 1) {
-      if (e.id && e.id !== 'hc-root') return e.id;
+      if (BLOCK_TAGS.test(e.tagName)) return e;
+      if (!fallback && BLOCK_FALLBACK_TAGS.test(e.tagName)) fallback = e;
       e = e.parentNode;
     }
-    return '';
+    return fallback;
+  }
+
+  function collapse(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
+
+  // The block's text, windowed around the quote rather than truncated at the
+  // head. A quote past char 700 used to be absent from its own block field,
+  // which silently breaks source-matching downstream.
+  function blockWindowText(blockEl, range) {
+    if (!blockEl) return '';
+    // Index text, not textContent: an agent matching this block against the
+    // source file must not be handed a suggestion's replacement text spliced
+    // into the middle of the document's own words.
+    var idx = buildIndex(blockEl);
+    var raw = idx.text;
+    if (raw.length <= BLOCK_CAP) return collapse(raw);
+    var s = boundaryPos(idx, range.startContainer, range.startOffset, true);
+    var e = boundaryPos(idx, range.endContainer, range.endOffset, false);
+    if (s == null || e == null || e < s) { s = 0; e = 0; }
+    var qlen = e - s, from, to;
+    if (qlen >= BLOCK_CAP) {
+      // Quote longer than the cap: no window can hold it. Start at the quote.
+      from = s;
+      to = Math.min(raw.length, s + BLOCK_CAP);
+    } else {
+      var pad = Math.floor((BLOCK_CAP - qlen) / 2);
+      from = Math.max(0, s - pad);
+      to = Math.min(raw.length, from + BLOCK_CAP);
+      from = Math.max(0, to - BLOCK_CAP);
+    }
+    var out = collapse(raw.slice(from, to));
+    if (from > 0) out = '…' + out;
+    if (to < raw.length) out = out + '…';
+    return out;
+  }
+
+  // The heading chain in scope at a block: nearest preceding h1, then the
+  // nearest h2 after it, and so on down to the block's own level.
+  function headingChain(blockEl) {
+    var chain = [];
+    if (!blockEl || !blockEl.compareDocumentPosition) return chain;
+    var hs = document.querySelectorAll('h1,h2,h3,h4,h5,h6');
+    var before = [];
+    for (var i = 0; i < hs.length; i++) {
+      var h = hs[i];
+      if (h.closest && h.closest('#hc-root')) continue;
+      if (h === blockEl ||
+        (blockEl.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_PRECEDING)) before.push(h);
+    }
+    var level = 7;
+    for (var j = before.length - 1; j >= 0; j--) {
+      var lv = parseInt(before[j].tagName.charAt(1), 10);
+      if (lv < level) {
+        chain.push(truncate(buildIndex(before[j]).text, 200));
+        level = lv;
+        if (lv === 1) break;
+      }
+    }
+    return chain.reverse();
+  }
+
+  // Return the nearest id-bearing ancestor as an element, not just its id:
+  // ids repeat in generated HTML, and getElementById would hand back the first
+  // element with that id — usually the wrong one.
+  function nearestIdEl(node) {
+    var e = node.nodeType === 1 ? node : node.parentNode;
+    while (e && e.nodeType === 1) {
+      if (e.id && e.id !== 'hc-root') return { el: e, id: e.id };
+      e = e.parentNode;
+    }
+    return { el: null, id: '' };
   }
 
   function containerFor(anchor) {
@@ -286,23 +493,95 @@
     return document.body;
   }
 
+  // A shown suggestion puts its replacement text on the page in a .hc-ins span.
+  // That text is overlay, not document, so the text index ignores it — and a
+  // selection touching it has no position in the index at all. Snap such
+  // boundaries onto the original text the suggestion replaces, which is what a
+  // comment on a suggested edit should anchor to anyway.
+  // The range covering the original text that this .hc-ins replaces. Those
+  // marks always sit immediately before it in the DOM (see applyHighlights).
+  function insHostRange(insEl) {
+    var id = insEl.getAttribute('data-hc-id');
+    var entry = id && registry[id];
+    var marks = entry && entry.marks;
+    var r = document.createRange();
+    try {
+      if (marks && marks.length) {
+        r.setStartBefore(marks[0]);
+        r.setEndAfter(marks[marks.length - 1]);
+      } else {
+        r.selectNode(insEl);
+      }
+    } catch (e) { return null; }
+    return r;
+  }
+
+  // Grow a selection so that every suggestion it touches contributes the
+  // original text being replaced instead of the inserted replacement. A
+  // selection lying wholly inside a replacement then anchors to the text that
+  // replacement is proposed for, rather than to nothing.
+  function normalizeRangeForAnchor(range) {
+    var r;
+    try { r = range.cloneRange(); } catch (e) { return range; }
+    Array.prototype.forEach.call(document.querySelectorAll('.hc-ins'), function (ins) {
+      var hits = false;
+      try { hits = range.intersectsNode(ins); } catch (e) {}
+      if (!hits) return;
+      var hr = insHostRange(ins);
+      if (!hr) return;
+      try {
+        if (r.compareBoundaryPoints(Range.START_TO_START, hr) > 0) r.setStart(hr.startContainer, hr.startOffset);
+        if (r.compareBoundaryPoints(Range.END_TO_END, hr) < 0) r.setEnd(hr.endContainer, hr.endOffset);
+      } catch (e) {}
+    });
+    return r;
+  }
+
   // Build an anchor object from the current selection's Range.
   function anchorFromRange(range) {
-    var quote = range.toString();
+    range = normalizeRangeForAnchor(range);
     var idNode = range.commonAncestorContainer;
-    var containerId = nearestId(idNode);
-    var container = containerId ? document.getElementById(containerId) : document.body;
+    var found = nearestIdEl(idNode);
+    var containerId = found.id;
+    var container = found.el || document.body;
     var index = buildIndex(container);
-    // Locate the quote's position to derive prefix/suffix from container text.
+    // Locate the selection's position to derive the quote and prefix/suffix
+    // from container text. The quote must come from the index, never from
+    // range.toString(): a selection may include a suggestion's inserted
+    // replacement text, which no later search of the page can ever find.
     var occ = findOccurrenceOffsets(index, range);
+    var bodyIndex = null, bodyOcc = null;
+    function ensureBodyIndex() {
+      if (!bodyIndex) {
+        bodyIndex = container === document.body ? index : buildIndex(document.body);
+        bodyOcc = container === document.body ? occ : findOccurrenceOffsets(bodyIndex, range);
+      }
+      return bodyIndex;
+    }
+    if (!occ && container !== document.body) {
+      // Mapping against the container failed (a boundary outside it, say). The
+      // whole-document index is a better answer than range.toString(), which
+      // can carry overlay-injected replacement text.
+      ensureBodyIndex();
+      if (bodyOcc) { container = document.body; containerId = ''; index = bodyIndex; occ = bodyOcc; }
+    }
+    var quote = occ ? index.text.slice(occ.start, occ.end) : range.toString();
     var prefix = '', suffix = '', nth = null, total = null;
-    if (occ) {
+    if (occ && quote) {
       prefix = index.text.slice(Math.max(0, occ.start - CTX), occ.start);
       suffix = index.text.slice(occ.end, occ.end + CTX);
       var all = allOccurrences(index.text, quote);
       total = all.length;
       nth = all.indexOf(occ.start);
       if (nth < 0) nth = null;
+    }
+    var blockEl = nearestBlockEl(idNode);
+    // Where in the document this sits, as a fraction. Survives re-generation of
+    // the page better than any id, and lets a reader order orphaned anchors.
+    var docPos = null;
+    ensureBodyIndex();
+    if (bodyOcc && bodyIndex.text.length) {
+      docPos = Math.round((bodyOcc.start / bodyIndex.text.length) * 10000) / 10000;
     }
     return {
       quote: quote, prefix: prefix, suffix: suffix, containerId: containerId,
@@ -311,22 +590,47 @@
       // quotes ("a", "the") in a source file where prefix/suffix alone may not
       // survive markdown/rendering differences.
       nth: nth, total: total,
-      block: nearestBlockText(idNode)
+      block: blockWindowText(blockEl, range),
+      blockTag: blockEl ? blockEl.tagName.toLowerCase() : '',
+      headings: headingChain(blockEl),
+      docPos: docPos
     };
+  }
+
+  // Map one range boundary to a char offset in the container index. A boundary
+  // that is not itself an indexed text node — it sits on an element (selection
+  // ending at a tag boundary) or inside skipped overlay text — is snapped
+  // outward to the nearest indexed position rather than abandoned.
+  function boundaryPos(index, node, offset, isStart) {
+    var segs = index.segs, i;
+    for (i = 0; i < segs.length; i++) {
+      if (segs[i].node === node) {
+        return segs[i].start + Math.min(offset, segs[i].node.nodeValue.length);
+      }
+    }
+    var probe = document.createRange();
+    try { probe.setStart(node, offset); probe.collapse(true); }
+    catch (e) { return null; }
+    try {
+      if (isStart) {
+        for (i = 0; i < segs.length; i++) {
+          if (probe.comparePoint(segs[i].node, 0) >= 0) return segs[i].start;
+        }
+        return index.text.length;
+      }
+      for (i = segs.length - 1; i >= 0; i--) {
+        if (probe.comparePoint(segs[i].node, segs[i].node.nodeValue.length) <= 0) return segs[i].end;
+      }
+      return 0;
+    } catch (e) { return null; }
   }
 
   // Given the live range, find its char offsets within the container index.
   function findOccurrenceOffsets(index, range) {
-    var segs = index.segs;
-    var startPos = null, endPos = null;
-    for (var i = 0; i < segs.length; i++) {
-      if (segs[i].node === range.startContainer) startPos = segs[i].start + range.startOffset;
-      if (segs[i].node === range.endContainer) endPos = segs[i].start + range.endOffset;
-    }
-    if (startPos != null && endPos != null && endPos >= startPos) {
-      return { start: startPos, end: endPos };
-    }
-    return null;
+    var startPos = boundaryPos(index, range.startContainer, range.startOffset, true);
+    var endPos = boundaryPos(index, range.endContainer, range.endOffset, false);
+    if (startPos == null || endPos == null || endPos < startPos) return null;
+    return { start: startPos, end: endPos };
   }
 
   function allOccurrences(text, quote) {
@@ -351,6 +655,34 @@
     return n;
   }
 
+  // Locate the span between an anchor's recorded prefix and suffix. Used only
+  // when the quote itself cannot be found. A prefix that occurs more than once
+  // with a plausible suffix after it is treated as unplaceable rather than
+  // guessed at — a highlight in the wrong paragraph is worse than none.
+  function offsetsFromContext(index, anchor) {
+    var pre = anchor.prefix || '', suf = anchor.suffix || '';
+    // A suffix is what bounds the end; without one there is nothing to stop the
+    // span running to the end of the container. Short contexts are allowed as
+    // long as the pair turns out to be unique (checked below) — a selection at
+    // the very start of a paragraph legitimately has almost no prefix.
+    if (!suf || pre.length + suf.length < 16) return null;
+    var cap = Math.max(40, (anchor.quote || '').length * 2 + 40);
+    var starts = [], from = 0, p;
+    if (!pre) starts.push(0);
+    else while ((p = index.text.indexOf(pre, from)) !== -1) {
+      starts.push(p + pre.length);
+      from = p + 1;
+    }
+    var best = null;
+    for (var i = 0; i < starts.length; i++) {
+      var s = starts[i], q = index.text.indexOf(suf, s);
+      if (q === -1 || q - s > cap) continue;
+      if (best) return null; // ambiguous
+      best = { start: s, end: q };
+    }
+    return best;
+  }
+
   // Re-attach an anchor: return a live Range or null (orphaned).
   function rangeFromAnchor(anchor) {
     if (!anchor || !anchor.quote) return null;
@@ -363,7 +695,22 @@
       index = buildIndex(container);
       occ = allOccurrences(index.text, anchor.quote);
     }
-    if (!occ.length) return null;
+    if (!occ.length) {
+      // Anchors written before the quote was taken from the text index can hold
+      // a quote with a suggestion's replacement text spliced into it, which no
+      // search of the page will ever match. Their prefix/suffix came from clean
+      // text, so place them by context instead of orphaning them forever.
+      var ctx = offsetsFromContext(index, anchor);
+      if (!ctx) return null;
+      var ca = locate(index, ctx.start), cb = locate(index, ctx.end);
+      if (!ca || !cb) return null;
+      var crange = document.createRange();
+      try {
+        crange.setStart(ca.node, ca.offset);
+        crange.setEnd(cb.node, cb.offset);
+      } catch (e) { return null; }
+      return crange;
+    }
 
     var best = occ[0], bestScore = -1;
     for (var i = 0; i < occ.length; i++) {
@@ -480,10 +827,11 @@
           break;
         case 'resolve':
         case 'reopen':
-          var t = note.parentId;
-          if (!statusEvents[t] || Date.parse(row.ts) >= Date.parse(statusEvents[t].ts)) {
-            statusEvents[t] = rec;
-          }
+          // Plain row order decides: the last status row wins. Comparing
+          // timestamps mixed client-authored cts with server ts — two different
+          // clocks — so a resolve written offline and uploaded late could beat a
+          // reopen made after it. bin/resolve.py reduces the same way.
+          statusEvents[note.parentId] = rec;
           break;
         case 'delete':
           // target may be a thread root or a reply itemId
@@ -515,7 +863,7 @@
   /* ------------------------------------------------------------------ *
    * 7. Rendering: highlights + suggestions + sidebar                   *
    * ------------------------------------------------------------------ */
-  var showSuggestions = localStorage.getItem(LS.showSug);
+  var showSuggestions = safeGet('localStorage', LS.showSug);
   showSuggestions = showSuggestions == null ? null : showSuggestions === '1';
   var activeFilter = 'all'; // all | open | resolved
   var UI = {}; // cached DOM refs
@@ -553,8 +901,23 @@
           focusThread(th.id, false);
         });
       });
-      // record document position for sidebar ordering
-      th._docPos = markDocPos(marks[0]);
+    });
+    assignDocPositions();
+  }
+
+  // Sidebar ordering follows the page. querySelectorAll returns document order,
+  // so one pass over the marks just placed gives every thread its position —
+  // the previous code re-walked the whole document once per thread.
+  function assignDocPositions() {
+    var marks = document.querySelectorAll('mark.hc-highlight');
+    var pos = 0, seen = {};
+    for (var i = 0; i < marks.length; i++) {
+      var id = marks[i].getAttribute('data-hc-id');
+      if (!id || seen[id]) continue;
+      seen[id] = ++pos;
+    }
+    THREADS.forEach(function (th) {
+      th._docPos = seen[th.id] || Infinity;
     });
   }
 
@@ -562,14 +925,6 @@
     if (showSuggestions != null) return showSuggestions;
     // default ON when any suggestion exists
     return THREADS.some(function (t) { return t.kind === 'suggestion'; });
-  }
-
-  function markDocPos(node) {
-    // A monotonically increasing number approximating document order.
-    var pos = 0, walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null);
-    var e;
-    while ((e = walker.nextNode())) { pos++; if (e === node) return pos; }
-    return Infinity;
   }
 
   function sortedThreads() {
@@ -600,6 +955,14 @@
     // Sidebar panel
     UI.panel = el('aside', { class: 'hc-panel', 'aria-hidden': 'true' });
 
+    // Push vs overlay. Pushing is the default — an overlaid panel hides the
+    // right-hand 340px of the document, which is where the text being commented
+    // on often is. Below the CSS cutoff the push does not apply either way.
+    UI.pushBtn = el('button', {
+      class: 'hc-icon-btn hc-push-btn', text: '⇥',
+      onclick: function () { setPushMode(!pushMode); }
+    });
+
     UI.pending = el('button', {
       class: 'hc-pending', style: 'display:none',
       title: 'Not yet uploaded — click to retry now',
@@ -610,6 +973,7 @@
       el('div', { class: 'hc-title', text: 'Comments' }),
       el('div', { class: 'hc-head-btns' }, [
         UI.pending,
+        UI.pushBtn,
         el('button', { class: 'hc-icon-btn', title: 'Refresh', text: '↻',
           onclick: function () { refresh(); } }),
         el('button', { class: 'hc-icon-btn', title: 'Close', text: '×',
@@ -620,7 +984,7 @@
     UI.sugToggle = el('label', { class: 'hc-sug-toggle' }, [
       el('input', { type: 'checkbox', onchange: function (e) {
         showSuggestions = e.target.checked;
-        localStorage.setItem(LS.showSug, showSuggestions ? '1' : '0');
+        safeSet('localStorage', LS.showSug, showSuggestions ? '1' : '0');
         renderAll();
       } }),
       document.createTextNode(' Show suggestions')
@@ -650,7 +1014,12 @@
 
     UI.list = el('div', { class: 'hc-list' });
 
+    // One-line notice for storage failures (quota). Sits under the header so a
+    // reviewer whose offline copy could not be saved is told, not left guessing.
+    UI.storageNote = el('div', { class: 'hc-storage-note', style: 'display:none' });
+
     UI.panel.appendChild(header);
+    UI.panel.appendChild(UI.storageNote);
     UI.panel.appendChild(UI.who);
     UI.panel.appendChild(el('div', { class: 'hc-controls' }, [UI.sugToggle, UI.tabs]));
     UI.panel.appendChild(UI.list);
@@ -661,10 +1030,40 @@
 
     renderWho();
     renderPending();
+    syncPushMode();
+    if (pendingStorageNote) showStorageNote(pendingStorageNote);
 
     // Banner container (top)
     UI.banner = el('div', { class: 'hc-banner', style: 'display:none' });
     root.appendChild(UI.banner);
+  }
+
+  // Push mode: the panel resizes the page rather than covering it. Stored
+  // per browser; the media query in the stylesheet suppresses the push on
+  // viewports too narrow for two columns.
+  var pushMode = safeGet('localStorage', LS.push);
+  pushMode = pushMode == null ? true : pushMode === '1';
+
+  function setPushMode(v) {
+    pushMode = !!v;
+    safeSet('localStorage', LS.push, pushMode ? '1' : '0');
+    syncPushMode();
+  }
+  function syncPushMode() {
+    document.documentElement.classList.toggle('hc-push', pushMode);
+    if (!UI.pushBtn) return;
+    UI.pushBtn.classList.toggle('hc-active', pushMode);
+    UI.pushBtn.title = pushMode
+      ? 'Panel pushes page aside — click to overlay the page instead'
+      : 'Panel overlays page — click to push the page aside instead';
+  }
+
+  var pendingStorageNote = null;
+  function showStorageNote(msg) {
+    pendingStorageNote = msg;
+    if (typeof UI === 'undefined' || !UI || !UI.storageNote) return;
+    UI.storageNote.textContent = msg;
+    UI.storageNote.style.display = '';
   }
 
   // Queued-but-unsent count. Silence here would look exactly like a successful
@@ -930,7 +1329,7 @@
 
   function submitComment(anchor, text, kind, replacement, voter) {
     var itemId = genId();
-    var note = { v: 1, text: text || '', kind: kind, anchor: anchor };
+    var note = { v: 2, text: text || '', kind: kind, anchor: anchor };
     if (kind === 'suggestion') note.replacement = replacement || '';
     setName(voter);
     if (UI.whoInput) { UI.whoInput.value = voter; renderWho(); }
@@ -940,21 +1339,21 @@
 
   function submitReply(threadId, text) {
     var itemId = genId();
-    var note = { v: 1, text: text, parentId: threadId };
+    var note = { v: 2, text: text, parentId: threadId };
     record(itemId, 'reply', note);
     renderAll();
   }
 
   function submitStatus(threadId, vote) {
     var itemId = genId();
-    var note = { v: 1, parentId: threadId };
+    var note = { v: 2, parentId: threadId };
     record(itemId, vote, note);
     renderAll();
   }
 
   function submitDelete(threadId, targetId) {
     var itemId = genId();
-    var note = { v: 1, parentId: targetId };
+    var note = { v: 2, parentId: targetId };
     record(itemId, 'delete', note);
     renderAll();
   }
@@ -962,7 +1361,11 @@
   /* ------------------------------------------------------------------ *
    * 10. Floating toolbar + composer popover                            *
    * ------------------------------------------------------------------ */
-  var savedRange = null; // range captured at selection time
+  // Captured at selection time: the anchor (not a live Range) plus the rect the
+  // toolbar/composer position from. A live Range is destroyed by the
+  // body.normalize() every re-render performs, so a background refresh landing
+  // between selecting text and pressing 💬 used to corrupt the quote.
+  var savedSel = null; // { anchor, quote, rect }
 
   function clearToolbar() {
     if (UI.toolbar) { UI.toolbar.remove(); UI.toolbar = null; }
@@ -986,8 +1389,15 @@
         clearToolbar();
         return;
       }
-      savedRange = sel.getRangeAt(0).cloneRange();
-      showToolbar(sel.getRangeAt(0));
+      var range = sel.getRangeAt(0);
+      var anchor;
+      try { anchor = anchorFromRange(range); } catch (err) {
+        console.warn('[html-comments] could not anchor selection:', err);
+        clearToolbar();
+        return;
+      }
+      savedSel = { anchor: anchor, quote: anchor.quote, rect: range.getBoundingClientRect() };
+      showToolbar(range);
     }, 10);
   }
 
@@ -1028,11 +1438,18 @@
   }
 
   function openComposer(kind) {
-    if (!savedRange) return;
+    if (!savedSel || !savedSel.anchor) return;
     clearToolbar();
     clearComposer();
-    var anchor = anchorFromRange(savedRange);
-    var rect = savedRange.getBoundingClientRect();
+    var anchor = savedSel.anchor;
+    if (!anchor.quote) {
+      // Nothing of the document itself is selected (only overlay text, with no
+      // original behind it). Anchoring here would orphan the thread on sight.
+      showBanner('Select some of the document text to comment on it.');
+      setTimeout(hideBanner, 4000);
+      return;
+    }
+    var rect = savedSel.rect;
 
     var replArea = null, textArea;
     var frag = [];
@@ -1155,10 +1572,21 @@
     hideBanner();
     // Drain the queue before reading, so a flushed record comes back in the
     // same GET rather than living on as an outbox entry until the next refresh.
+    var done = function () {
+      refreshing = false;
+      renderPending();
+    };
     return flushOutbox().then(fetchRows).then(function (res) {
       if (res && res.ok === true) {
-        writeCache(res.rows || []);
-        ROWS = composeRows(res.rows || []);
+        var rows = res.rows || [];
+        // Server truth closes the outbox. A successful POST is often answered
+        // with a 302 to a one-time URL that then 404s, so the response cannot be
+        // parsed even though the row was written; the record stays queued and
+        // gets posted again, duplicating it. If the server has the itemId, the
+        // record landed — drop it.
+        reconcileOutbox(rows);
+        writeCache(rows);
+        ROWS = composeRows(rows);
         renderAll(true);
       } else if (res && res.ok === false && /unknown action/i.test(res.error || '')) {
         showBanner('Comments backend needs updating (rows action not deployed)');
@@ -1168,25 +1596,57 @@
       }
     }).catch(function (err) {
       console.warn('[html-comments] rows GET failed:', err);
-      // Offline: fall back to the last server read plus the queue, so the
-      // reviewer keeps working with a full picture.
-      ROWS = composeRows(readCache());
-      renderAll(true);
-      showBanner(readOutbox().length
-        ? 'Offline — showing the last synced comments plus yours; queued edits upload when you reconnect.'
-        : 'Offline — showing the last synced comments. Anything you add is saved locally and uploads when you reconnect.');
-    }).then(function () {
-      refreshing = false;
-      renderPending();
+      // Fall back to the last server read plus the queue, so the reviewer keeps
+      // working with a full picture either way.
+      try {
+        ROWS = composeRows(readCache());
+        renderAll(true);
+      } catch (e) { console.warn('[html-comments] render after failed refresh:', e); }
+      // A TypeError is what fetch throws when the request never reached a
+      // server. A timeout (AbortError) or unparseable body is a reachable-but-
+      // broken backend, which is a different thing to tell the reviewer.
+      var offline = (navigator && navigator.onLine === false) ||
+        (err && err.name === 'TypeError');
+      if (offline) {
+        showBanner(readOutbox().length
+          ? 'Offline — showing the last synced comments plus yours; queued edits upload when you reconnect.'
+          : 'Offline — showing the last synced comments. Anything you add is saved locally and uploads when you reconnect.');
+      } else {
+        showBanner(readOutbox().length
+          ? 'Comments server unreachable or returned an invalid response — showing the last synced comments plus yours; queued edits upload when it responds again.'
+          : 'Comments server unreachable or returned an invalid response — showing the last synced comments.');
+      }
+    }).then(done, function (e) {
+      // Even a throw inside the handlers above must not leave refresh wedged.
+      console.warn('[html-comments] refresh failed:', e);
+      done();
     });
+  }
+
+  function reconcileOutbox(rows) {
+    var box = readOutbox();
+    if (!box.length) return;
+    var have = {};
+    (rows || []).forEach(function (r) { if (r && r.itemId) have[r.itemId] = true; });
+    var keep = box.filter(function (p) { return !(p && p.itemId && have[p.itemId]); });
+    if (keep.length !== box.length) writeOutbox(keep);
   }
 
   // Debug hook: inspect internal state (harmless; aids testing).
   window.__hcVersion = HC_VERSION;
   window.__hcState = function () {
     return { version: HC_VERSION, rows: ROWS.length, threads: THREADS.length,
-      savedRange: !!savedRange, composer: !!UI.composer };
+      savedSelection: !!savedSel, composer: !!UI.composer };
   };
+
+  // Debug hook: what anchor would the current selection produce?
+  window.__hcAnchorFromSelection = function () {
+    var sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    return anchorFromRange(sel.getRangeAt(0));
+  };
+  // Debug hook: can a stored anchor still be found on the page?
+  window.__hcCanReattach = function (anchor) { return !!rangeFromAnchor(anchor); };
 
   // Debug hook: feed fake rows through the exact same render path.
   window.__hcInjectRows = function (rows) {

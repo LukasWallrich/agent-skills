@@ -1,4 +1,5 @@
 {
+  "_comment": "Copy this to ~/.claude/html-comments.config.json (NOT into the skill folder) and fill in your own values.",
   "endpoint": "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec",
   "assetBase": "https://your-asset-host.example/",
   "publishTarget": "your-asset-host.example"
