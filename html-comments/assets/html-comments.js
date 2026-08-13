@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  var HC_VERSION = '2026-08-11.2';
+  var HC_VERSION = '2026-08-13.1';
 
   // Loading the overlay twice (e.g. a page that both inlines the script and
   // loads it from the asset host) would produce two sidebars, two toolbars and
@@ -319,10 +319,23 @@
     });
   }
 
-  function fetchRows() {
+  // A read is answered with a 302 to a one-time Google URL that intermittently
+  // 404s, so a single failure says nothing about the backend. Retry before
+  // concluding it is unreachable — one bad roll of the dice used to put the
+  // "server unreachable" banner on a perfectly healthy page.
+  var ROWS_READ_TRIES = 3;
+  var ROWS_RETRY_MS = 1500;
+
+  function fetchRows(attempt) {
+    attempt = attempt || 1;
     var url = ENDPOINT + (ENDPOINT.indexOf('?') >= 0 ? '&' : '?') +
       'action=rows&project=' + encodeURIComponent(PROJECT);
-    return fetchJSON(url, { method: 'GET' });
+    return fetchJSON(url, { method: 'GET' }).catch(function (err) {
+      if (attempt >= ROWS_READ_TRIES) throw err;
+      return new Promise(function (resolve) {
+        setTimeout(function () { resolve(fetchRows(attempt + 1)); }, ROWS_RETRY_MS * attempt);
+      });
+    });
   }
 
   /* ------------------------------------------------------------------ *
