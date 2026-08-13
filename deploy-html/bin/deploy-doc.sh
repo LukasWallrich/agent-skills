@@ -170,7 +170,9 @@ else
   if [ "$COMMENTS" = 1 ]; then
     CHECK="$(dirname "$SKILL")/html-comments/bin/check-slug.sh"
     [ -x "$CHECK" ] || { echo "Missing $CHECK — the html-comments skill must be installed." >&2; exit 1; }
-    "$CHECK" "$SLUG" --allow-existing-at "$URL" || exit 1
+    # --claim reserves the slug in the registry, so a second document cannot take
+    # it during the window before this page receives its first comment.
+    "$CHECK" "$SLUG" --allow-existing-at "$URL" --claim "$URL" || exit 1
   fi
 
   if [ "$DOMAIN_LIVE" = 1 ]; then

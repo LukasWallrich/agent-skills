@@ -67,7 +67,7 @@ import urllib.request
 
 CONFIG = pathlib.Path.home() / ".claude" / "html-comments.config.json"
 
-POST_SPACING_S = 1.0          # bursts trip the endpoint's rate limiting
+# Writes go out as a single batch request, so no inter-post spacing is needed.
 RETRIES = 4                   # per request, with 5s/10s/20s backoff (none after the last try)
 BACKOFF_BASE_S = 5
 
@@ -193,15 +193,22 @@ def select_targets(ids: list, want_open: list, want_resolved: list) -> tuple:
     return targets, already, unknown
 
 
-def post(ep: str, payload: dict) -> None:
-    """Post one record. Absorbs the 302→404 (the row is already written by then).
+def post(ep: str, records: list) -> None:
+    """Post every record in ONE request. Absorbs the 302→404 (the rows are
+    already written by then).
 
     Returns nothing on purpose: neither {"ok":true} nor an HTTP error is evidence
     of what landed. main() verifies by re-reading the log afterwards.
+
+    The endpoint groups a batch by project and writes one range per tab, so a
+    whole review round costs a single round trip instead of one per record —
+    which is what made resolving a large project take minutes.
     """
+    if not records:
+        return
     req = urllib.request.Request(
         ep,
-        data=json.dumps(payload).encode("utf-8"),
+        data=json.dumps({"records": records}).encode("utf-8"),
         # MUST be a JSON body with this content type. A form-encoded POST is
         # answered {"ok":true} and appends nothing at all.
         headers={"Content-Type": "text/plain;charset=utf-8"},
@@ -296,10 +303,14 @@ def main() -> None:
     # the new records and the threads would silently stay open (trap #2).
     stamp = int(time.time() * 1000)
     posted_replies: dict = {}          # reply itemId -> thread id
+    batch: list = []
+    # Each reply is placed immediately before its own resolve. The endpoint
+    # appends the batch in order, so the sheet keeps reply-then-resolve per
+    # thread exactly as the per-record loop used to write it.
     for n, thread_id in enumerate(targets, 1):
         if thread_id in replies:
             reply_id = f"hc-reply-{stamp}-{n}"
-            post(ep, {
+            batch.append({
                 "project": args.project,
                 "itemId": reply_id,
                 "vote": "reply",
@@ -310,8 +321,7 @@ def main() -> None:
                 "session": args.session,
             })
             posted_replies[reply_id] = thread_id
-            time.sleep(POST_SPACING_S)
-        payload = {
+        batch.append({
             "project": args.project,
             # A FRESH, globally unique id. Reusing thread_id here makes the
             # overlay dedupe the record away, so the thread silently stays open.
@@ -322,9 +332,10 @@ def main() -> None:
             "note": json.dumps({"v": 1, "parentId": thread_id}),
             "voter": args.voter,
             "session": args.session,
-        }
-        post(ep, payload)
-        time.sleep(POST_SPACING_S)
+        })
+
+    print(f"posting {len(batch)} records in one request...", file=sys.stderr)
+    post(ep, batch)
 
     # Re-read and re-reduce: an ok:true response is not evidence that a row landed,
     # and neither is an HTTP error evidence that it did not. This is the truth.

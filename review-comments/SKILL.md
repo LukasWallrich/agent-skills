@@ -112,8 +112,9 @@ result rather than any individual response:
   404 as failure (curl -f, bare urllib, requests.raise_for_status) will abort a batch whose
   rows are all landing. Success is only ever established by re-reading `?action=rows`.
 - **Bursts get rate-limited** — after a rapid run of requests, reads and writes both start
-  404ing for a while. The script spaces posts and retries reads with backoff; a hand-rolled
-  loop typically dies mid-batch and leaves the job half done.
+  404ing for a while. The script sends every record of a run in **one** batch request and
+  retries reads with backoff; a hand-rolled loop posting record by record typically dies
+  mid-batch and leaves the job half done.
 
 ```
 python3 ~/.claude/skills/review-comments/bin/resolve.py <project> --open                     # list open thread ids

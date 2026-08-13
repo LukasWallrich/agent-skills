@@ -62,10 +62,12 @@ command, and the existing comments stay attached.
 Three things are checked before anything uploads, because none of them can be undone:
 
 1. **The domain already serves a different document.** Deploying would destroy it.
-2. **The slug already has a comment tab elsewhere.** Two documents on one tab corrupts both
+2. **The slug belongs to another document** — registered to a different URL, or already
+   carrying comments. Two documents on one tab corrupts both
    sets of comments — each page tries to anchor the other's comments into text it does not
    contain. This check is `html-comments/bin/check-slug.sh`, the same script used when a slug
-   is embedded by hand, so both routes apply one rule.
+   is embedded by hand, so both routes apply one rule. A deploy also *claims* the slug, so
+   the name is reserved from the moment the page is live, not from its first comment.
 3. **The domain is live but carries no marker** (deployed before this script, or by
    something else). It cannot be shown to be the same document, so it is not assumed.
 

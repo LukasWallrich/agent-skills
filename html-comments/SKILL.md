@@ -29,19 +29,31 @@ this skill is giving each distinct document its own slug.**
 ~/.claude/skills/html-comments/bin/check-slug.sh <slug>
 ```
 
-Exit 0 means free, exit 3 means another document already owns that tab (it reports how many
-records are in it), exit 1 means the check could not be made — treat that as unsafe too, and
-do not embed the slug.
+Exit 0 means free, exit 3 means another document already owns it, exit 1 means the check
+could not be made — treat that as unsafe too, and do not embed the slug.
 
 Run it whenever you put a slug into a page by hand: a Quarto `comments-include.html`, a
 GitHub Pages report, any page not published through `deploy-html`. That skill runs this same
 script itself, so a deployed page is already covered.
 
-Two flags:
+**Reserve the slug in the same step**, so a second document cannot take the name in the
+window before this page receives its first comment:
 
-- `--allow-existing-at <url>` — a reused slug is fine when the page at that URL *is* the
-  document that owns it. This is how a redeploy of a revised version passes.
-- `--force` — skips the check. Only when you know the tab is that same document.
+```sh
+~/.claude/skills/html-comments/bin/check-slug.sh <slug> --claim <page-url>
+```
+
+Flags:
+
+- `--claim <url>` — records the slug in the `_slugs` registry against that URL. Re-running
+  for the same URL is fine; the registry, not the response, decides who holds it.
+- `--allow-existing-at <url>` — a slug already held is fine when the page at that URL *is*
+  the document holding it. This is how a redeploy of a revised version passes.
+- `--force` — skips the check. Only when you know the slug is that same document.
+
+A slug counts as taken if the registry holds it **or** comments already exist under it. The
+registry is what covers a page that is live but not yet commented on — a tab appears only on
+the first write, so the tab list alone would call that slug free.
 
 Rules:
 1. **One slug ↔ one document.** Never reuse a slug for different content. Derive it from the
