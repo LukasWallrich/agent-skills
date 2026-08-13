@@ -35,5 +35,11 @@ Put the `/exec` URL in `~/.claude/html-comments.config.json` (see the skill's RE
 config.example.json). The URL is public and unauthenticated — anyone who has it can read
 and write the sheet, so don't share it and don't use it for sensitive content.
 
+Set `ADMIN_TOKEN` at the top of Code.gs to a random string (`python3 -c "import secrets;
+print(secrets.token_urlsafe(24))"`) and put the same value in `adminToken` in your config.
+It gates the `release` action only; leave both empty and releasing is unavailable. Never
+commit the real value — the repo copy keeps a placeholder.
+
 To change server behaviour later: edit Code.gs, `clasp push -f`, then `clasp deploy -i
-<existing deployment id>` to keep the same URL.
+<existing deployment id>` to keep the same URL. Using `-i` matters: a fresh deployment gets
+a new URL, and every published page embeds the old one.

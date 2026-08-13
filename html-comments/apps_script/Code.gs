@@ -13,6 +13,9 @@
  *         Missing project or unparseable body -> {"ok":false, error} (no row written;
  *         the original FORRT endpoint silently appended a blank row to a 'default' tab).
  *         {action:'claim', project, url}                  -> {"ok":true, claimed:bool, url, claimedAt}
+ *         {action:'release', project, token}               -> {"ok":true, released:bool}
+ *         Release drops a reservation. It needs the admin token, and refuses any
+ *         slug that already has comments, so it can never orphan feedback.
  *         Claiming reserves a slug in the _slugs registry. A tab only appears once
  *         someone comments, so the tab list alone cannot tell whether a slug is
  *         already spoken for by a deployed-but-uncommented page.
@@ -29,6 +32,9 @@
 var SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID';
 var HEADERS = ['timestamp', 'project', 'itemId', 'vote', 'note', 'voter', 'session', 'userAgent'];
 var SLUG_TAB = '_slugs';
+// Admin-only actions. Never present in a published page, so a leaked endpoint URL
+// does not confer it. Placeholder in the public repo copy; real value only here.
+var ADMIN_TOKEN = 'YOUR_ADMIN_TOKEN';
 var SLUG_HEADERS = ['slug', 'url', 'claimedAt'];
 
 function getSpreadsheet_() {
@@ -68,6 +74,7 @@ function doPost(e) {
       return json_({ ok: false, error: 'body must be JSON (sent as text/plain)' });
     }
     if (body && body.action === 'claim') return claimSlug_(body);
+    if (body && body.action === 'release') return releaseSlug_(body);
 
     // One record or many: {..}, [{..}, ..], or {records:[{..}, ..]}.
     var records = body && body.records ? body.records : body;
@@ -137,6 +144,31 @@ function claimSlug_(body) {
   }
   sh.appendRow([slug, String(body.url || ''), new Date()]);
   return json_({ ok: true, claimed: true, slug: slug, url: String(body.url || '') });
+}
+
+function releaseSlug_(body) {
+  // Two independent guards: the caller must hold the admin token, and a slug
+  // that already has comments is never released — dropping its reservation
+  // would let a second document be pointed at that existing feedback.
+  if (!ADMIN_TOKEN || String(body.token || '') !== ADMIN_TOKEN) {
+    return json_({ ok: false, error: 'release requires a valid token' });
+  }
+  var slug = String(body.project || '').trim();
+  if (!slug) return json_({ ok: false, error: 'project required' });
+  var ss = getSpreadsheet_();
+  if (ss.getSheetByName(tabName_(slug))) {
+    return json_({ ok: false, error: 'slug has comments; not released' });
+  }
+  var sh = ss.getSheetByName(SLUG_TAB);
+  if (!sh) return json_({ ok: true, released: false, reason: 'no registry' });
+  var data = sh.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === slug) {
+      sh.deleteRow(i + 1);
+      return json_({ ok: true, released: true, slug: slug });
+    }
+  }
+  return json_({ ok: true, released: false, reason: 'not registered' });
 }
 
 function doGet(e) {

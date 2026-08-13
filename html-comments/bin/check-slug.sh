@@ -6,6 +6,7 @@
 #   bin/check-slug.sh my-report --claim https://my-report.surge.sh/
 #   bin/check-slug.sh my-report --allow-existing-at https://my-report.surge.sh/
 #   bin/check-slug.sh my-report --force
+#   bin/check-slug.sh my-report --release      # drop a reservation (admin token)
 #
 # A slug names the sheet tab that holds a document's comments. Two documents on
 # one tab corrupts both sets: each page tries to anchor the other's comments into
@@ -23,19 +24,20 @@ set -euo pipefail
 
 CFG="$HOME/.claude/html-comments.config.json"
 
-SLUG=""; ALLOW_AT=""; CLAIM_URL=""; FORCE=0
+SLUG=""; ALLOW_AT=""; CLAIM_URL=""; FORCE=0; RELEASE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --allow-existing-at) ALLOW_AT="${2:-}"; shift 2 ;;
     --claim)             CLAIM_URL="${2:-}"; shift 2 ;;
     --force)             FORCE=1; shift ;;
+    --release)           RELEASE=1; shift ;;
     -h|--help)
-      echo "Usage: check-slug.sh <slug> [--claim <url>] [--allow-existing-at <url>] [--force]" >&2; exit 1 ;;
+      echo "Usage: check-slug.sh <slug> [--claim <url>] [--allow-existing-at <url>] [--release] [--force]" >&2; exit 1 ;;
     *) [ -z "$SLUG" ] || { echo "Only one slug may be given." >&2; exit 1; }
        SLUG="$1"; shift ;;
   esac
 done
-[ -n "$SLUG" ] || { echo "Usage: check-slug.sh <slug> [--claim <url>] [--allow-existing-at <url>] [--force]" >&2; exit 1; }
+[ -n "$SLUG" ] || { echo "Usage: check-slug.sh <slug> [--claim <url>] [--allow-existing-at <url>] [--release] [--force]" >&2; exit 1; }
 
 printf '%s' "$SLUG" | grep -Eq '^[a-z0-9][a-z0-9-]{2,89}$' || {
   echo "Slug '$SLUG' is not usable: 3-90 chars of [a-z0-9-], starting alphanumeric." >&2
@@ -100,6 +102,44 @@ for s in slugs:
         break
 ' "$SLUG"
 }
+
+if [ "$RELEASE" = 1 ]; then
+  TOKEN=$(python3 -c '
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+v = cfg.get("adminToken")
+if not v: sys.exit("no \"adminToken\" in " + sys.argv[1] + " — releasing needs it")
+print(v)
+' "$CFG") || exit 1
+
+  # Comments are the thing a release must never strand, so say so before asking.
+  TABS=$(fetch_retry "$ENDPOINT?action=projects") || unreachable
+  HAS_TAB=$(printf '%s' "$TABS" | python3 -c '
+import json, sys
+print("yes" if sys.argv[1] in (json.load(sys.stdin).get("projects") or []) else "no")
+' "$SLUG")
+  if [ "$HAS_TAB" = "yes" ]; then
+    echo "Slug '$SLUG' has comments, so it is not released — that guard is deliberate." >&2
+    echo "Its reservation is what stops a second document being pointed at that feedback." >&2
+    exit 3
+  fi
+
+  curl -sL --max-time 30 --data-binary "$(python3 -c '
+import json, sys
+print(json.dumps({"action": "release", "project": sys.argv[1], "token": sys.argv[2]}))
+' "$SLUG" "$TOKEN")" -H 'Content-Type: text/plain;charset=utf-8' "$ENDPOINT" >/dev/null 2>&1 || true
+
+  # The reply is often lost to the 302 quirk, so the registry decides.
+  sleep 2
+  HOLDER=$(registry_holder) || { echo "Could not re-read the registry to confirm." >&2; exit 1; }
+  if [ -z "$HOLDER" ]; then
+    echo "Slug '$SLUG' is not reserved — the name is free."
+    exit 0
+  fi
+  echo "Slug '$SLUG' is still registered to $HOLDER." >&2
+  echo "The release was refused; check the admin token." >&2
+  exit 3
+fi
 
 HOLDER=$(registry_holder) || unreachable
 

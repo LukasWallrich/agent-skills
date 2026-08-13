@@ -50,6 +50,10 @@ Flags:
 - `--allow-existing-at <url>` — a slug already held is fine when the page at that URL *is*
   the document holding it. This is how a redeploy of a revised version passes.
 - `--force` — skips the check. Only when you know the slug is that same document.
+- `--release` — drops a reservation, freeing the name. Needs `adminToken` in the config, and
+  refuses any slug that already has comments: that reservation is what stops a second
+  document being pointed at existing feedback. Use it after tearing down a page nobody
+  commented on.
 
 A slug counts as taken if the registry holds it **or** comments already exist under it. The
 registry is what covers a page that is live but not yet commented on — a tab appears only on

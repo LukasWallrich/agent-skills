@@ -23,6 +23,7 @@ it along. Do not move it inside.
 | `endpoint` | `bin/check-slug.sh`, `review-comments/bin/resolve.py`, and the snippet embedded in each page |
 | `assetBase` | you and the model, when writing an embed snippet |
 | `publishTarget` | `bin/publish.sh` |
+| `adminToken` | `bin/check-slug.sh --release` only. Optional — omit it and releasing is simply unavailable. It must match `ADMIN_TOKEN` in the deployed `Code.gs`, and must never appear in a published page or a public repo. |
 
 ## 2. Deploy your own endpoint
 
