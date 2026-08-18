@@ -15,6 +15,7 @@ Each directory is one skill. Clone the repo somewhere and symlink the skills you
 git clone https://github.com/LukasWallrich/agent-skills.git ~/Coding/agent-skills
 ln -s ~/Coding/agent-skills/html-comments  ~/.claude/skills/html-comments
 ln -s ~/Coding/agent-skills/download-paper ~/.claude/skills/download-paper
+ln -s ~/Coding/agent-skills/upload-public  ~/.claude/skills/upload-public
 ```
 
 Symlinking rather than copying means one source of truth — a fix reaches every project at
@@ -55,6 +56,24 @@ I wouldn't.
 
 `SERPAPI_API_KEY` (Google Scholar tier, free tier is 100 searches/month) and
 `RESEARCHER_EMAIL` (polite Unpaywall usage) are read from the environment.
+
+### `upload-public`
+
+Uploads a screenshot, image, video or any other file to your own Cloudflare R2 bucket and
+prints a public URL plus a ready-to-paste markdown snippet — for pasting a screenshot into
+a GitHub issue or PR, or anywhere else that cannot read a local path. Takes the macOS
+clipboard image directly with `--clipboard`. Object keys carry a content hash, so the same
+file keeps the same URL.
+
+`--gif` converts a screen recording to an animated GIF before uploading, because GitHub's
+`media-src` policy lists only GitHub's own hosts: an externally hosted `.mp4` renders as a
+player that never loads, while a GIF goes through GitHub's camo image proxy and animates.
+
+**Setup:** needs the `aws` CLI, and `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+`R2_ENDPOINT`, `R2_PUBLIC_BUCKET` and `R2_PUBLIC_BASE` in `~/.claude/api_keys.env`. Create
+the bucket with `wrangler r2 bucket create <name>` and `wrangler r2 bucket dev-url enable
+<name>`, which prints the public base. R2's free tier is 10 GB with no egress charge. The
+bucket is public: anything uploaded is readable by anyone with the URL.
 
 ## Licence
 
