@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  var HC_VERSION = '2026-08-13.1';
+  var HC_VERSION = '2026-08-19.1';
 
   // Loading the overlay twice (e.g. a page that both inlines the script and
   // loads it from the asset host) would produce two sidebars, two toolbars and
@@ -765,6 +765,17 @@
     return mark;
   }
 
+  // Text sitting directly inside table structure is whitespace between cells:
+  // the parser moves any real content out. Wrapping it puts a <mark> straight
+  // into a <tr>, and the browser then builds an anonymous cell around it, which
+  // shifts every cell in that row one column to the right.
+  var TABLE_STRUCT_TAGS = /^(TABLE|THEAD|TBODY|TFOOT|TR|COLGROUP)$/;
+
+  function inTableStructure(textNode) {
+    var p = textNode.parentNode;
+    return !!(p && p.nodeType === 1 && TABLE_STRUCT_TAGS.test(p.tagName));
+  }
+
   // Wrap all text-node segments intersected by `range` (per node, never across
   // element boundaries). Returns the array of mark elements in document order.
   function wrapRange(range, cls, hcId) {
@@ -775,6 +786,7 @@
       acceptNode: function (n) {
         if (isSkippable(n)) return NodeFilter.FILTER_REJECT;
         if (!n.nodeValue.length) return NodeFilter.FILTER_REJECT;
+        if (inTableStructure(n)) return NodeFilter.FILTER_REJECT;
         return range.intersectsNode(n) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
       }
     });
