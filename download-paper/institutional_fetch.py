@@ -1,41 +1,62 @@
-"""
-Institutional (paywalled) PDF fetch using the user's logged-in real Chrome.
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "fetchpdf @ git+https://github.com/The-Metascience-Observatory/fetchpdf@82a4c474178a3e4245da82542c3a25434674e48e",
+#   "requests",
+# ]
+# ///
+"""Fetch a paywalled PDF through the user's logged-in, visible Chrome (macOS).
 
-Two routes, both riding the user's own authenticated browser session:
+The Chrome layer here is shared: `download_paper.py` imports it for its browser
+step, and this file's CLI uses it directly. Everything addresses ONE tab by its
+AppleScript `id`, so a run never touches the tab the user is working in.
 
-  1. EBSCOhost (--ebsco) — best for psychology (APA PsycInfo, and Springer /
-     Cloudflare-blocked papers EBSCO indexes). macOS only: it drives the real
-     Chrome via osascript. Search BY DOI, read the record id, open the PDF
-     viewer, take the signed content.ebscohost.com URL out of the viewer's
-     resource timings, and curl it. That signed URL is SELF-AUTHENTICATING —
-     no cookies, no CORS dance.
-  2. Direct publisher PDF — construct the publisher's canonical PDF URL and
-     fetch it with a DOMAIN-AWARE cookie jar exported from the browser.
+Routes:
+  1. Navigate-then-fetch — point the tab at a PDF URL, wait until Chrome renders
+     it as `application/pdf`, then read the bytes with an in-page credentialed
+     `fetch`. The asset host is same-origin once the tab is on it, so CORS
+     allows the read, and bot-check interstitials (Cloudflare, Anubis, Imperva)
+     clear themselves while the poll runs.
+  2. EBSCOhost (--ebsco) — best for psychology (APA PsycInfo, and Springer /
+     Cloudflare-blocked papers EBSCO indexes). Search BY DOI, read the record id,
+     open the PDF viewer, take the signed content.ebscohost.com URL out of the
+     viewer's resource timings, and curl it. That signed URL is
+     SELF-AUTHENTICATING — no cookies, no CORS dance.
+  3. Direct publisher PDF — the publisher's canonical PDF URL fetched with a
+     domain-aware cookie jar exported from the browser.
 
 Prereqs: log in once at the publisher / EBSCO in your real Chrome (via your
-institution / OpenAthens). For route 2 also run `export-cookies` afterwards.
+institution / OpenAthens); Chrome's *View ▸ Developer ▸ Allow JavaScript from
+Apple Events* enabled once. For route 3 also run `export-cookies` afterwards.
 
 Usage:
-  python institutional_fetch.py --doi 10.1037/edu0000827 --ebsco [--out out.pdf]
-  python institutional_fetch.py --doi 10.1080/00224545.2024.2439953
-  python institutional_fetch.py export-cookies         # after logging in
+  ./institutional_fetch.py --doi 10.1037/edu0000827 --ebsco [--out out.pdf]
+  ./institutional_fetch.py --doi 10.1080/00224545.2024.2439953
+  ./institutional_fetch.py export-cookies         # after logging in
 
 Set INSTITUTION_EBSCO_PROFILE to your library's cluster id — the <cluster> in the
 research.ebsco.com/c/<cluster>/... URL you land on after logging in.
 
 Gotchas learned the hard way:
+  - Chrome's AppleScript tab `id` compares as a STRING. A numeric `=` matches
+    nothing and every command silently does nothing.
+  - Chrome's PDF viewer refuses to serialise a Promise back to AppleScript, so
+    the in-page fetch parks its base64 on `window` and a poll collects it.
+  - A URL served with `Content-Disposition: attachment` never reaches the
+    viewer — Chrome drops the file in ~/Downloads and the tab does not move.
+    Prefer inline PDF URLs.
   - A full browser cookie set is thousands of cookies; sending all of them to one
     host returns "400 Request Header Or Cookie Too Large". Build a per-domain jar
     so requests sends only the matching host's cookies.
-  - Cross-origin fetch of a publisher PDF is CORS-blocked. Navigate to it first
-    (see nav_then_fetch) so the asset host becomes same-origin.
   - Headless browsers are flagged by Cloudflare at most publishers, which is why
     everything here goes through the real, visible browser.
 """
 from __future__ import annotations
-import json, subprocess, argparse, re, time, os, sys, hashlib
+import argparse, base64, hashlib, json, os, re, subprocess, sys, time
 from pathlib import Path
 from urllib.parse import quote
+
 import requests
 
 BU = ["browser-use", "--browser", "real"]
@@ -43,20 +64,25 @@ CACHE = Path.home() / ".claude" / "cache" / "pdfs"
 COOKIES = Path.home() / ".claude" / "cache" / "browser_cookies.json"
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
-# Your library's EBSCO cluster id (the <cluster> in research.ebsco.com/c/<cluster>/...).
-EBSCO_PROFILE = os.environ.get("INSTITUTION_EBSCO_PROFILE", "")
+#: Base64 characters read back per osascript call.
+CHUNK = 800_000
+
+
+class ChromeError(RuntimeError):
+    """Chrome refused a command — no window, JS disabled, tab gone."""
 
 
 def pdf_urls(doi):
-    """Constructable publisher PDF URLs by DOI prefix (subscribed access via cookies)."""
+    """Constructable publisher PDF URLs by DOI prefix, inline versions first."""
     p = (doi or "").split("/")[0]
     t = {
         "10.1007": [f"https://link.springer.com/content/pdf/{doi}.pdf"],
         "10.1057": [f"https://link.springer.com/content/pdf/{doi}.pdf"],
-        "10.1111": [f"https://onlinelibrary.wiley.com/doi/pdfdirect/{doi}?download=true",
-                    f"https://onlinelibrary.wiley.com/doi/pdf/{doi}"],
-        "10.1002": [f"https://onlinelibrary.wiley.com/doi/pdfdirect/{doi}?download=true"],
-        "10.1080": [f"https://www.tandfonline.com/doi/pdf/{doi}?download=true"],
+        "10.1111": [f"https://onlinelibrary.wiley.com/doi/pdf/{doi}",
+                    f"https://onlinelibrary.wiley.com/doi/pdfdirect/{doi}"],
+        "10.1002": [f"https://onlinelibrary.wiley.com/doi/pdf/{doi}",
+                    f"https://onlinelibrary.wiley.com/doi/pdfdirect/{doi}"],
+        "10.1080": [f"https://www.tandfonline.com/doi/pdf/{doi}"],
         "10.1177": [f"https://journals.sagepub.com/doi/pdf/{doi}"],
         "10.1098": [f"https://royalsocietypublishing.org/doi/pdf/{doi}"],
         "10.1371": [f"https://journals.plos.org/plosone/article/file?id={doi}&type=printable"],
@@ -68,14 +94,245 @@ def pdf_urls(doi):
     return t
 
 
-def is_fulltext(t):
-    if len(t) >= 12000:
-        return True
-    low = t.lower()
-    return len(t) >= 5000 and sum(s in low for s in
-        ("introduction", "method", "results", "discussion", "references")) >= 3
+def elsevier_pdf_urls(landing_url):
+    """ScienceDirect PDF URLs derived from a `/science/article/pii/<PII>` URL."""
+    m = re.search(r"/science/article/(?:abs/)?pii/([A-Za-z0-9]+)", landing_url or "")
+    if not m:
+        return []
+    base = f"https://www.sciencedirect.com/science/article/pii/{m.group(1)}/pdfft"
+    return [f"{base}?isDTMRedir=true", f"{base}?isDTMRedir=true&download=true"]
 
 
+# ---------------------------------------------------------------------------
+# Real-Chrome driver (macOS / osascript).
+# ---------------------------------------------------------------------------
+def _osa(script, timeout=90):
+    r = subprocess.run(["osascript", "-e", script], capture_output=True,
+                       text=True, timeout=timeout)
+    return (r.stdout or "").strip(), (r.stderr or "").strip()
+
+
+def chrome_running():
+    """True when Chrome is already running. Never launches it."""
+    if sys.platform != "darwin":
+        return False
+    out, _ = _osa('application "Google Chrome" is running', timeout=15)
+    return out == "true"
+
+
+def _esc_js(js):
+    return js.replace("\\", "\\\\").replace('"', '\\"')
+
+
+class ChromeTab:
+    """One tab of the user's Chrome, addressed by its AppleScript id.
+
+    Opens at the end of the front window, restores whichever tab was in front,
+    and closes itself on exit. Chrome is never activated, so focus stays put.
+    """
+
+    def __init__(self):
+        self.id = None
+        self._front = None
+
+    def __enter__(self):
+        count, err = _osa('tell application "Google Chrome" to return count of windows', 15)
+        if not count.isdigit() or int(count) == 0:
+            raise ChromeError(f"Chrome has no window open ({err or count})")
+        self._front, _ = _osa(
+            'tell application "Google Chrome" to return active tab index of front window', 15)
+        out, err = _osa(
+            'tell application "Google Chrome"\n'
+            '  set t to make new tab at end of tabs of front window'
+            ' with properties {URL:"about:blank"}\n'
+            '  return id of t\n'
+            'end tell', 30)
+        if not out.isdigit():
+            raise ChromeError(err or "could not open a tab")
+        self.id = out
+        if self._front.isdigit():
+            _osa('tell application "Google Chrome" to set active tab index of front window '
+                 f'to {self._front}', 15)
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def _call(self, body, timeout=90):
+        script = ('tell application "Google Chrome"\n'
+                  '  repeat with w in windows\n'
+                  '    repeat with tt in tabs of w\n'
+                  f'      if (id of tt as string) is "{self.id}" then\n'
+                  f'        {body}\n'
+                  '      end if\n'
+                  '    end repeat\n'
+                  '  end repeat\n'
+                  '  return "NOTAB"\n'
+                  'end tell')
+        return _osa(script, timeout)
+
+    def js(self, code, timeout=90):
+        """Result of one line of JavaScript in this tab, as a string."""
+        out, err = self._call(f'return (execute tt javascript "{_esc_js(code)}")', timeout)
+        if err:
+            raise ChromeError(err)
+        return "" if out == "NOTAB" else out
+
+    def js_soft(self, code, timeout=90):
+        """`js`, but an error page that refuses JS reads as an empty result."""
+        try:
+            return self.js(code, timeout)
+        except ChromeError:
+            return ""
+
+    def nav(self, url):
+        self._call(f'set URL of tt to "{url}"\n        return "OK"', 30)
+
+    def close(self):
+        if self.id:
+            self._call('close tt\n        return "CLOSED"', 30)
+            self.id = None
+
+    def javascript_allowed(self):
+        """Whether Chrome lets Apple Events run JavaScript in this tab."""
+        try:
+            return self.js("1+1", timeout=30) == "2"
+        except ChromeError:
+            return False
+
+    # -- page state ---------------------------------------------------------
+    def wait_for_pdf(self, timeout=20):
+        """Poll until the tab renders a PDF. Bot checks clear themselves here."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.js_soft("document.contentType") == "application/pdf":
+                return True
+            time.sleep(1)
+        return False
+
+    def wait_for_load(self, timeout=20, off_host=None):
+        """Poll until the document is complete, optionally off a redirector host."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            state = self.js_soft("document.readyState+'|'+location.hostname")
+            ready, _, host = state.partition("|")
+            if ready == "complete" and host and host != off_host:
+                return True
+            time.sleep(1)
+        return False
+
+    def wait_for_js(self, code, timeout=20, blank=("", "NONE")):
+        """Poll one expression until it returns something other than `blank`."""
+        deadline = time.time() + timeout
+        while True:
+            got = self.js_soft(code)
+            if got not in blank:
+                return got
+            if time.time() >= deadline:
+                return None
+            time.sleep(1)
+
+    # -- bytes --------------------------------------------------------------
+    def read_pdf_bytes(self, timeout=60):
+        """Bytes of the PDF this tab is displaying, via an in-page fetch.
+
+        Chrome's PDF viewer cannot hand a Promise back to AppleScript, so the
+        fetch parks its base64 on `window` and this polls for it, then reads it
+        back in chunks (one osascript call per chunk).
+        """
+        self.js_soft("window.__pdf=null;window.__pdferr=null;"
+                "fetch(location.href,{credentials:'include'})"
+                ".then(function(r){return r.arrayBuffer()})"
+                ".then(function(a){var b=new Uint8Array(a),s='',i;"
+                "for(i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);window.__pdf=btoa(s)})"
+                ".catch(function(e){window.__pdferr=String(e)});'started'")
+        deadline = time.time() + timeout
+        length = None
+        while time.time() < deadline:
+            state = self.js_soft("window.__pdferr?'ERR':(window.__pdf?String(window.__pdf.length):'')")
+            if state == "ERR":
+                return None
+            if state.isdigit():
+                length = int(state)
+                break
+            time.sleep(1)
+        if not length:
+            return None
+        parts = []
+        for off in range(0, length, CHUNK):
+            chunk = self.js_soft(f"window.__pdf.substr({off},{CHUNK})", timeout=120)
+            if not chunk:
+                return None       # a dropped chunk would decode to a corrupt file
+            parts.append(chunk)
+        try:
+            return base64.b64decode("".join(parts))
+        except Exception:
+            return None
+
+
+def nav_then_fetch(tab, url, timeout=20):
+    """PDF bytes for `url` read through the browser, or None."""
+    tab.nav(url)
+    if not tab.wait_for_pdf(timeout):
+        return None
+    data = tab.read_pdf_bytes()
+    return data if data and data[:4] == b"%PDF" else None
+
+
+def landing_pdf_urls(tab, doi, timeout=25):
+    """PDF URLs advertised by the publisher's landing page for a DOI."""
+    tab.nav(f"https://doi.org/{doi}")
+    if not tab.wait_for_load(timeout, off_host="doi.org"):
+        return []
+    urls = []
+    meta = tab.js("(document.querySelector('meta[name=citation_pdf_url]')||{}).content||''")
+    if meta.startswith("http"):
+        urls.append(meta)
+    urls += elsevier_pdf_urls(tab.js("location.href"))
+    return list(dict.fromkeys(urls))
+
+
+# ---- EBSCOhost: search by DOI -> viewer -> signed content URL -> curl --------
+RID_JS = ("(function(){var a=Array.from(document.querySelectorAll('a')).find("
+          "function(e){return /\\/search\\/details\\//.test(e.href)});if(!a)return 'NONE';"
+          "var m=a.href.match(/\\/details\\/([a-z0-9]+)/i);return m?m[1]:'NONE';})()")
+# The signed content URL shows up in the viewer's resource timings.
+CONTENT_JS = ("(function(){var res=performance.getEntriesByType('resource')"
+              ".map(function(r){return r.name});"
+              "var c=res.find(function(n){return /content\\.ebscohost\\.com\\/cds\\/retrieve/.test(n)});"
+              "return c||'NONE';})()")
+
+
+def fetch_ebsco(tab, doi, profile, all_db=False):
+    """PDF bytes for a DOI from EBSCOhost, or None.
+
+    PsycInfo first, then every database. No record id means EBSCO does not index
+    the paper; a record with no content URL means EBSCO has a link-out to the
+    publisher rather than a hosted PDF.
+    """
+    base = f"https://research.ebsco.com/c/{profile}"
+    rid = None
+    for dbq in ["&db=psyh"] + ([""] if all_db else []):
+        tab.nav(f"{base}/search/results?q={quote(doi, safe='')}{dbq}")
+        rid = tab.wait_for_js(RID_JS, timeout=25)
+        if rid:
+            break
+    if not rid:
+        return None
+
+    tab.nav(f"{base}/viewer/pdf/{rid}")
+    url = tab.wait_for_js(CONTENT_JS, timeout=30)
+    if not url:
+        return None
+
+    # The signed cds/retrieve token authenticates the request by itself.
+    r = subprocess.run(["curl", "-sL", "-A", UA, url], capture_output=True, timeout=180)
+    data = r.stdout
+    return data if data[:4] == b"%PDF" else None
+
+
+# ---- cookie-jar route -------------------------------------------------------
 def export_cookies():
     subprocess.run(BU + ["cookies", "export", str(COOKIES)], capture_output=True, timeout=90)
     return COOKIES.exists()
@@ -95,14 +352,8 @@ def cookie_jar():
     return jar
 
 
-def to_pdf(content, out):
-    out.write_bytes(content)
-    txt = out.with_suffix(".txt")
-    subprocess.run(["pdftotext", "-q", str(out), str(txt)], timeout=120)
-    return txt.exists() and is_fulltext(txt.read_text(errors="ignore"))
-
-
-def fetch_direct(doi, out):
+def fetch_direct(doi):
+    """PDF bytes from a constructable publisher URL plus browser cookies, or None."""
     if not COOKIES.exists():
         export_cookies()
     s = requests.Session()
@@ -113,167 +364,64 @@ def fetch_direct(doi, out):
             r = s.get(u, timeout=90, allow_redirects=True)
         except requests.RequestException:
             continue
-        if r.status_code == 200 and r.content[:4] == b"%PDF" and to_pdf(r.content, out):
-            return True
-    return False
+        if r.status_code == 200 and r.content[:4] == b"%PDF":
+            return r.content
+    return None
 
 
-# ---------------------------------------------------------------------------
-# Real-Chrome driver (macOS / osascript).
-#
-# browser-use's eval route stopped working reliably against these apps, so the
-# EBSCO flow talks to the visible Chrome window directly through AppleScript.
-# Requires: Chrome running, and View > Developer > "Allow JavaScript from Apple
-# Events" enabled once.
-# ---------------------------------------------------------------------------
-def _osa(script, timeout=60):
-    r = subprocess.run(["osascript", "-e", script], capture_output=True,
-                       text=True, timeout=timeout)
-    return (r.stdout or "").strip(), (r.stderr or "").strip()
-
-
-def chrome_js(js):
-    """Run JS in Chrome's active tab and return its result as a string."""
-    esc = js.replace("\\", "\\\\").replace('"', '\\"')
-    out, _ = _osa('tell application "Google Chrome" to return '
-                  f'execute (active tab of front window) javascript "{esc}"')
-    return out
-
-
-def chrome_nav(url):
-    _osa('tell application "Google Chrome" to set URL of (active tab of front window) '
-         f'to "{url}"')
-
-
-def chrome_open_tab():
-    _osa('tell application "Google Chrome" to make new tab at end of tabs of front window '
-         'with properties {URL:"about:blank"}')
-    _osa('tell application "Google Chrome" to set active tab index of front window '
-         'to (count of tabs of front window)')
-
-
-def nav_then_fetch(url, out, wait=7):
-    """Navigate Chrome to a PDF URL, then fetch it same-origin from that page.
-
-    For publishers whose direct fetch 403s or returns HTML (Elsevier /pdfft,
-    OUP /article-pdf): once Chrome has followed the redirect to the asset host,
-    that host is same-origin, so an in-page fetch is allowed and credentialed.
-    """
-    chrome_nav(url)
-    time.sleep(wait)
-    if "application/pdf" not in (chrome_js("document.contentType") or ""):
-        return False
-    b64 = chrome_js(
-        '(async()=>{const r=await fetch(location.href,{credentials:"include"});'
-        'const b=new Uint8Array(await r.arrayBuffer());let s="";'
-        'for(const c of b)s+=String.fromCharCode(c);return btoa(s);})()')
-    if not b64:
-        return False
-    import base64
-    try:
-        data = base64.b64decode(b64)
-    except Exception:
-        return False
-    return data[:4] == b"%PDF" and to_pdf(data, out)
-
-
-# ---- EBSCOhost: search by DOI -> viewer -> signed content URL -> curl --------
-RID_JS = ("(function(){var a=Array.from(document.querySelectorAll('a')).find("
-          "function(e){return /\\/search\\/details\\//.test(e.href)});if(!a)return 'NONE';"
-          "var m=a.href.match(/\\/details\\/([a-z0-9]+)/i);return m?m[1]:'NOID';})()")
-# The old linkprocessor/v2-pdf-full-text selector is gone since the viewer
-# rewrite — the signed content URL now shows up directly in resource timings.
-CONTENT_JS = ("(function(){var res=performance.getEntriesByType('resource')"
-              ".map(function(r){return r.name});"
-              "var c=res.find(function(n){return /content\\.ebscohost\\.com\\/cds\\/retrieve/.test(n)});"
-              "return c||'NONE';})()")
-
-
-def fetch_ebsco(doi, out, db="psyh"):
-    """Fetch a paper's PDF via EBSCOhost, by DOI. db=None searches all databases."""
-    if sys.platform != "darwin":
-        raise SystemExit("The EBSCO route drives Chrome via osascript — macOS only.")
-    if not EBSCO_PROFILE:
-        raise SystemExit("Set INSTITUTION_EBSCO_PROFILE to your library's EBSCO cluster id "
-                         "(the <cluster> in research.ebsco.com/c/<cluster>/...).")
-    base = f"https://research.ebsco.com/c/{EBSCO_PROFILE}"
-    chrome_open_tab()
-
-    rid = None
-    for dbq in (f"&db={db}" if db else "", ""):
-        chrome_nav(f"{base}/search/results?q={quote(doi, safe='')}{dbq}")
-        time.sleep(7)
-        got = chrome_js(RID_JS)
-        if got and got not in ("NONE", "NOID"):
-            rid = got
-            break
-    if not rid:
-        return False               # not indexed here
-
-    chrome_nav(f"{base}/viewer/pdf/{rid}")
-    time.sleep(9)
-    url = chrome_js(CONTENT_JS)
-    if not url or url == "NONE":
-        return False               # EBSCO has "Linked Full Text" only, no hosted PDF
-
-    # The signed cds/retrieve token authenticates the request by itself.
-    r = subprocess.run(["curl", "-sL", "-A", UA, "-o", str(out), url],
-                       capture_output=True, timeout=180)
-    if r.returncode != 0 or not out.exists() or out.stat().st_size < 20000:
-        if out.exists():
-            out.unlink()
-        return False
-    if out.read_bytes()[:4] != b"%PDF":
-        out.unlink()
-        return False
-    return verify_pdf(out, doi)
-
-
-def verify_pdf(path, doi=None, title=None):
-    """Check page 1 really is the requested paper.
-
-    Worth doing every time: title-based search tiers happily return a
-    topically-similar paper under the DOI you asked for, and a mislabelled PDF
-    silently corrupts whatever dataset it lands in.
-    """
-    txt = path.with_suffix(".txt")
-    subprocess.run(["pdftotext", "-q", "-l", "2", str(path), str(txt)], timeout=120)
-    if not txt.exists():
-        return True                # can't check; caller may verify by reading it
-    head = txt.read_text(errors="ignore").lower()
-    if doi and doi.lower() in head:
-        return True
-    if title:
-        toks = [w for w in re.findall(r"[a-z]{5,}", title.lower())][:6]
-        if toks and sum(t in head for t in toks) >= max(2, len(toks) // 2):
-            return True
-    return not (doi or title)
+# ---- CLI --------------------------------------------------------------------
+def _identity():
+    """download_paper's Crossref lookup and identity check."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import download_paper
+    return download_paper.crossref_metadata, download_paper.verify_identity
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("mode", nargs="?", default="fetch")
     ap.add_argument("--doi", default="")
-    ap.add_argument("--title", default="")
     ap.add_argument("--ebsco", action="store_true", help="use the EBSCO route (needs --doi)")
-    ap.add_argument("--all-db", action="store_true", help="EBSCO: search all databases, not just PsycInfo")
+    ap.add_argument("--all-db", action="store_true",
+                    help="EBSCO: search all databases, not just PsycInfo")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
     if args.mode == "export-cookies":
-        print("exported" if export_cookies() else "failed", COOKIES); return
+        print("exported" if export_cookies() else "failed", COOKIES)
+        return
     if not args.doi:
         raise SystemExit("--doi is required (EBSCO is searched by DOI, not title).")
+
+    profile = os.environ.get("INSTITUTION_EBSCO_PROFILE", "")
+    if args.ebsco and not profile:
+        raise SystemExit("Set INSTITUTION_EBSCO_PROFILE to your library's EBSCO cluster id "
+                         "(the <cluster> in research.ebsco.com/c/<cluster>/...).")
+    if args.ebsco and not chrome_running():
+        raise SystemExit("The EBSCO route drives the running Chrome — start Chrome first.")
+
+    data = None
+    if args.ebsco:
+        with ChromeTab() as tab:
+            data = fetch_ebsco(tab, args.doi, profile, all_db=args.all_db)
+    else:
+        data = fetch_direct(args.doi)
+        if data is None and profile and chrome_running():
+            with ChromeTab() as tab:
+                data = fetch_ebsco(tab, args.doi, profile, all_db=args.all_db)
+    if not data:
+        raise SystemExit(1)
+
     CACHE.mkdir(parents=True, exist_ok=True)
     out = Path(args.out) if args.out else CACHE / (hashlib.md5(args.doi.encode()).hexdigest() + ".pdf")
-    db = None if args.all_db else "psyh"
-    if args.ebsco:
-        ok = fetch_ebsco(args.doi, out, db=db)
-    else:
-        ok = fetch_direct(args.doi, out) or fetch_ebsco(args.doi, out, db=db)
-    if ok:
-        print(out)            # success: path on stdout (matches download_paper.py)
-    else:
+    out.write_bytes(data)
+    crossref_metadata, verify_identity = _identity()
+    meta = crossref_metadata(args.doi)
+    verdict = verify_identity(str(out), args.doi, meta.get("title"), meta.get("pages"))
+    if not verdict.ok:
+        out.unlink()
+        print(f"{verdict.state}: {verdict.reason}", file=sys.stderr)
         raise SystemExit(1)
+    print(out)            # success: path on stdout (matches download_paper.py)
 
 
 if __name__ == "__main__":

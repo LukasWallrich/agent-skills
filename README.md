@@ -42,20 +42,29 @@ and writes into your Google Sheet, so don't point it at someone else's.
 
 ### `download-paper`
 
-Downloads academic PDFs by DOI for claim verification, trying, in order: local cache, OSF
-preprints, Unpaywall, repository landing-page scraping, Google Scholar via SerpAPI, and
-headless-browser fetching. `institutional_fetch.py` handles paywalled papers your library
-subscribes to, fetching them through your logged-in real Chrome (macOS: it drives Chrome via
-`osascript`, since headless browsers are Cloudflare-flagged). Set
-`INSTITUTION_EBSCO_PROFILE` to your library's EBSCO cluster id for the EBSCO route.
+Downloads academic PDFs by DOI for claim verification: local cache, then the
+[`fetchpdf`](https://github.com/The-Metascience-Observatory/fetchpdf) open-access chain
+(OpenAlex, Unpaywall, PubMed Central, Crossref links, preprint servers, repositories,
+publisher routes), then Google Scholar via SerpAPI, then your own running, signed-in Chrome
+for whatever is paywalled. Every downloaded PDF is checked against the requested DOI, title
+and page range, so a topically-similar paper or a first-page preview is rejected and the
+search continues rather than being cached under the wrong DOI.
 
-**Sci-Hub is off by default** and only runs with an explicit `--scihub`. It hosts
-copyrighted papers without publisher permission; legality depends on your jurisdiction and
-it breaches most publishers' and institutions' terms either way. Enable at your own risk —
-I wouldn't.
+The Chrome step needs no manual step: on macOS, with Chrome running and *View ▸ Developer ▸
+Allow JavaScript from Apple Events* switched on, it opens one unfocused tab, walks the
+publisher's PDF URLs and EBSCOhost through your existing logins, and closes the tab again.
+Headless browsers are Cloudflare-flagged, so it drives the real Chrome via `osascript`. Set
+`INSTITUTION_EBSCO_PROFILE` to your library's EBSCO cluster id to include EBSCO.
+`--no-browser` leaves the run entirely non-interactive.
 
-`SERPAPI_API_KEY` (Google Scholar tier, free tier is 100 searches/month) and
-`RESEARCHER_EMAIL` (polite Unpaywall usage) are read from the environment.
+`download_paper.py` is a `uv run --script` file: run it directly, and uv installs its
+dependencies on first use. `institutional_fetch.py` holds the Chrome layer, and its CLI
+runs a single route (EBSCO, or a cookie-jar fetch of the publisher's PDF URL) against one
+DOI.
+
+`SERPAPI_API_KEYS` (comma-separated, tried in order; enables the Google Scholar step) and
+`RESEARCHER_EMAIL` (contact address for the open-access APIs) are read from the
+environment, then from `~/.claude/api_keys.env`.
 
 ### `upload-public`
 

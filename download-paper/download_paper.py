@@ -1,30 +1,44 @@
-#!/usr/bin/env python3
-"""Download academic PDFs given a DOI, with caching and multi-source fallback.
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "fetchpdf @ git+https://github.com/The-Metascience-Observatory/fetchpdf@82a4c474178a3e4245da82542c3a25434674e48e",
+#   "requests",
+# ]
+# ///
+"""Download an academic PDF by DOI, and check that it is that DOI's paper.
 
-Tiered approach:
-  1. Cache check
-  1b. OSF preprints (direct download)
-  2. Unpaywall direct PDF URL
-  3. Unpaywall landing page -> scrape for PDF links
-  4. Google Scholar via SerpAPI -> free PDF links
-  5. Sci-Hub — OFF by default, opt in with --scihub (see the note at that tier)
+Three steps:
+  A. `fetchpdf.fetch_pdf` — the open-access chain (OpenAlex, Unpaywall, PMC,
+     Crossref links, preprint servers, repository landing pages, publisher
+     routes). Every PDF it writes is checked against the requested record.
+  B. Google Scholar via SerpAPI, when step A found nothing and
+     a SerpAPI key is available. Each PDF link is downloaded and accepted only if
+     fetchpdf's identity check says it is the requested paper.
+  C. The user's running, signed-in Chrome (macOS), when steps A and B found
+     nothing. One throwaway tab walks the Scholar links plain HTTP could not
+     fetch, then the publisher's own PDF URLs, then EBSCOhost. `--no-browser`
+     skips it.
 
-On success: prints absolute path to PDF on stdout, exits 0.
-On failure: prints error to stderr, exits 1.
+On success: prints the absolute path to the PDF on stdout, exits 0.
+On failure: exits 1 (exit 2 with --open, after opening a candidate URL).
 All diagnostic output goes to stderr.
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import re
 import ssl
 import sys
-import time
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urljoin, urlparse
+import tempfile
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import institutional_fetch as chrome
 
 DEFAULT_CACHE_DIR = os.path.expanduser("~/.claude/cache/pdfs")
 DEFAULT_EMAIL = "unpaywall@impactstory.org"
@@ -32,662 +46,416 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+SCHOLAR_RESULTS = 5
+KEY_FILE = os.path.expanduser("~/.claude/api_keys.env")
+#: fetchpdf's names for keys the key file holds under other names.
+FETCHPDF_KEY_NAMES = {"COREAPIKEY": "CORE_API_KEY",
+                      "ELSEVIER_TDM_API_KEY": "ELSEVIER_API_KEY",
+                      "OPENALEXAPIKEY": "OPENALEX_API_KEY"}
+
+#: stdout is reserved for the result path. fetchpdf prints its progress there,
+#: so every call into it runs with stdout redirected to this stream.
+STDOUT = sys.stdout
 
 
 def log(msg):
     print(msg, file=sys.stderr)
 
 
-# =============================================================================
-# Utilities
-# =============================================================================
-
 def clean_doi(doi):
-    """Strip common DOI prefixes."""
     doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi)
     doi = re.sub(r"^doi:", "", doi, flags=re.IGNORECASE)
     return doi.strip()
 
 
 def doi_to_cache_path(doi, cache_dir):
-    """Generate cache file path from DOI using MD5 hash."""
     md5 = hashlib.md5(clean_doi(doi).encode()).hexdigest()
     return os.path.join(cache_dir, f"{md5}.pdf")
 
 
-def http_get(url, headers=None, timeout=30):
-    """Fetch URL, return (body_bytes, final_url) or raise."""
-    hdrs = {"User-Agent": USER_AGENT}
-    if headers:
-        hdrs.update(headers)
-    req = Request(url, headers=hdrs)
-    try:
-        ctx = ssl.create_default_context()
-    except Exception:
-        ctx = None
-    resp = urlopen(req, timeout=timeout, context=ctx)
-    return resp.read(), resp.url
-
-
-def http_get_json(url, timeout=30):
-    """Fetch URL and parse JSON response."""
-    body, _ = http_get(url, headers={"Accept": "application/json"}, timeout=timeout)
-    return json.loads(body)
-
-
 def validate_pdf(path):
-    """Check that a file looks like a valid PDF."""
-    if not os.path.exists(path):
-        return False
-    if os.path.getsize(path) < 1000:
+    """Whether the file exists, is big enough to be a document, and is a PDF."""
+    if not path or not os.path.exists(path) or os.path.getsize(path) < 1000:
         return False
     with open(path, "rb") as f:
-        magic = f.read(5)
-    return magic == b"%PDF-"
+        return f.read(5) == b"%PDF-"
 
 
-def download_pdf(url, output_path, referer=None, max_retries=2, timeout=60):
-    """Download a PDF to output_path. Returns True on success."""
-    headers = {"Accept": "application/pdf,*/*"}
-    if referer:
-        headers["Referer"] = referer
+def fetch_url(url, timeout=60, accept="application/pdf,*/*"):
+    """Body bytes for a URL, or None when the host refuses or times out."""
+    req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
+    try:
+        with urlopen(req, timeout=timeout, context=ssl.create_default_context()) as resp:
+            return resp.read()
+    except Exception as e:
+        log(f"    fetch failed: {e}")
+        return None
 
-    for attempt in range(max_retries + 1):
+
+def crossref_metadata(doi):
+    """Title, search title, author surnames and printed page range for a DOI.
+
+    Crossref keeps the subtitle in its own field, so `title` alone is often the
+    half of the title a search cannot find the paper by. `search_title` joins
+    the two; the identity check keeps the bare `title`, which is what a PDF is
+    guaranteed to print in one piece.
+    """
+    url = f"https://api.crossref.org/works/{quote(clean_doi(doi), safe='/')}"
+    body = fetch_url(url, timeout=15, accept="application/json")
+    if not body:
+        return {}
+    try:
+        msg = json.loads(body).get("message", {})
+    except ValueError:
+        return {}
+    title = (msg.get("title") or [None])[0]
+    subtitle = (msg.get("subtitle") or [None])[0]
+    return {
+        "title": title,
+        "search_title": f"{title}: {subtitle}" if title and subtitle else title,
+        "authors": [a["family"] for a in msg.get("author", []) if a.get("family")],
+        "pages": msg.get("page") or "",
+    }
+
+
+def verify_identity(path, doi, title, pages):
+    """fetchpdf's verdict on whether the PDF at `path` is this DOI's paper."""
+    with contextlib.redirect_stdout(sys.stderr):
+        from fetchpdf.retrieval.pdf_identity import verify_pdf_identity
+        from fetchpdf.retrieval.resolve import arxiv_id_from_doi
+
+        return verify_pdf_identity(
+            path, doi, title, pages=pages, arxiv_id=arxiv_id_from_doi(doi)
+        )
+
+
+# =============================================================================
+# Step A: the fetchpdf chain
+# =============================================================================
+
+def fetchpdf_download(doi, tmp_path, email, use_playwright):
+    """Run the fetchpdf chain into tmp_path. Returns True when it wrote a PDF."""
+    with contextlib.redirect_stdout(sys.stderr):
+        from fetchpdf import fetch_pdf
+
+        written = fetch_pdf(
+            doi,
+            tmp_path,
+            email=email,
+            verbose=True,
+            allow_xml_fallback=False,
+            use_playwright=use_playwright,
+        )
+    # A path fetchpdf did not return is a file it declined to vouch for.
+    return written is not None and validate_pdf(tmp_path)
+
+
+# =============================================================================
+# Step B: Google Scholar via SerpAPI
+# =============================================================================
+
+def build_scholar_query(title, authors):
+    """A Scholar query: the title, plus two surnames when the title is short."""
+    if not title:
+        return None
+    if authors and len(title) < 60:
+        return f"{title} {' '.join(authors[:2])}"
+    return title
+
+
+def load_key_file():
+    """KEY=value pairs from ~/.claude/api_keys.env; the environment wins."""
+    keys = {}
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE) as f:
+            for line in f:
+                name, sep, value = line.strip().removeprefix("export ").partition("=")
+                if sep and not name.startswith("#"):
+                    keys[name] = value.strip("'\"")
+    keys.update(os.environ)
+    return keys
+
+
+def serpapi_keys(keys):
+    """SerpAPI keys to try, in order: SERPAPI_API_KEYS (comma-separated), then SERPAPI_API_KEY."""
+    listed = keys.get("SERPAPI_API_KEYS", "").split(",") + [keys.get("SERPAPI_API_KEY", "")]
+    return list(dict.fromkeys(k.strip() for k in listed if k.strip()))
+
+
+def serpapi_search(query, api_keys):
+    """The Scholar result JSON from the first key with searches left, or {}.
+
+    SerpAPI answers an exhausted or invalid key with HTTP 429/401, or with an
+    `error` field on a 200; either moves on to the next key.
+    """
+    for n, api_key in enumerate(api_keys, 1):
+        params = urlencode({"engine": "google_scholar", "q": query,
+                            "api_key": api_key, "num": SCHOLAR_RESULTS})
+        log(f"  Querying SerpAPI (key {n} of {len(api_keys)})...")
+        body = fetch_url(f"https://serpapi.com/search.json?{params}",
+                         timeout=30, accept="application/json")
         try:
-            body, final_url = http_get(url, headers=headers, timeout=timeout)
+            data = json.loads(body) if body else None
+        except ValueError:
+            data = None
+        if data is None:
+            continue
+        error = str(data.get("error") or "")
+        if "run out" in error.lower() or "api key" in error.lower():
+            log(f"  SerpAPI key {n}: {error}")
+            continue
+        if error:
+            log(f"  SerpAPI: {error}")      # e.g. Google returned no results
+        return data
+    return {}
 
-            # Write to file
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            with open(output_path, "wb") as f:
-                f.write(body)
 
-            # Validate
-            if validate_pdf(output_path):
-                return True
-            else:
-                os.unlink(output_path)
-                log(f"  Downloaded file from {url} is not a valid PDF")
-                return False
+def scholar_pdf_links(query, api_keys):
+    """Every PDF link in the top Scholar results, in result order."""
+    data = serpapi_search(query, api_keys)
 
-        except (HTTPError, URLError, TimeoutError, OSError) as e:
-            if attempt < max_retries:
-                wait = 2 ** (attempt + 1)
-                log(f"  Retry {attempt + 1}/{max_retries} after {wait}s: {e}")
-                time.sleep(wait)
-            else:
-                log(f"  Download failed: {e}")
-                return False
+    links = []
+    for result in data.get("organic_results", [])[:SCHOLAR_RESULTS]:
+        for resource in result.get("resources", []):
+            link = resource.get("link")
+            if link and resource.get("file_format", "").upper() == "PDF":
+                links.append(link)
+        if re.search(r"arxiv\.org/pdf/", result.get("link", "")):
+            links.append(result["link"])
+    # Deduplicate, keeping Scholar's order.
+    return list(dict.fromkeys(links))
 
+
+def scholar_download(links, tmp_path, doi, title, pages):
+    """Walk the Scholar links, keeping the first that is the requested paper.
+
+    Returns (accepted_url, blocked_urls, wrong_urls). `blocked` are links that
+    did not yield PDF bytes (403, bot-check HTML, a landing page) — candidates
+    for the signed-in Chrome route. `wrong` are PDFs of some other document.
+    """
+    blocked, wrong = [], []
+    for url in links:
+        log(f"  Scholar candidate: {url}")
+        body = fetch_url(url)
+        if not body or not body.startswith(b"%PDF-") or len(body) < 1000:
+            blocked.append(url)
+            continue
+        with open(tmp_path, "wb") as f:
+            f.write(body)
+        verdict = verify_identity(tmp_path, doi, title, pages)
+        if verdict.ok:
+            log(f"    accepted: {verdict.reason}")
+            return url, blocked, wrong
+        log(f"    rejected ({verdict.state}): {verdict.reason}")
+        wrong.append(url)
+        os.unlink(tmp_path)
+    return None, blocked, wrong
+
+
+# =============================================================================
+# Step C: the user's signed-in Chrome
+# =============================================================================
+
+JS_MENU_HINT = ("Chrome refuses JavaScript from Apple Events. Turn it on once under "
+                "View ▸ Developer ▸ Allow JavaScript from Apple Events, "
+                "then re-run. Skipping the Chrome step.")
+
+
+def browser_candidates(tab, doi, blocked_links):
+    """Yield (url, source) PDF candidates for the browser walk, in try order.
+
+    Scholar's blocked links first (they are already known to hold this paper),
+    then the publisher's canonical PDF URLs, then whatever the landing page
+    advertises — `citation_pdf_url`, and ScienceDirect's `/pdfft` for a PII URL.
+    """
+    seen = set()
+    for url in blocked_links:
+        if url not in seen:
+            seen.add(url)
+            yield url, "scholar"
+    for url in chrome.pdf_urls(doi):
+        if url not in seen:
+            seen.add(url)
+            yield url, "publisher"
+    for url in chrome.landing_pdf_urls(tab, doi):
+        if url not in seen:
+            seen.add(url)
+            yield url, "landing page"
+
+
+def accept_bytes(data, tmp_path, doi, title, pages, label):
+    """Write `data` to tmp_path and keep it only if it is this DOI's paper."""
+    if not data:
+        log(f"    {label}: no PDF bytes")
+        return False
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+    verdict = verify_identity(tmp_path, doi, title, pages)
+    if verdict.ok:
+        log(f"    {label}: fetched and verified")
+        return True
+    log(f"    {label}: rejected ({verdict.state}) {verdict.reason}")
+    os.unlink(tmp_path)
     return False
 
 
-# =============================================================================
-# Tier 1b: OSF Preprints
-# =============================================================================
+def browser_download(doi, blocked_links, tmp_path, title, pages, ebsco_profile):
+    """Walk the browser candidates in one throwaway tab. Returns the URL kept.
 
-def get_osf_pdf_url(doi):
-    """Check if DOI is an OSF preprint and return direct download URL."""
-    doi_clean = clean_doi(doi)
-    m = re.match(r"^10\.3123[45]/osf\.io/(.+)$", doi_clean)
-    if m:
-        return f"https://osf.io/download/{m.group(1)}/"
-    return None
-
-
-# =============================================================================
-# Tier 2-3: Unpaywall
-# =============================================================================
-
-def get_unpaywall_info(doi, email):
-    """Query Unpaywall API. Returns dict with pdf_url and/or landing_url."""
-    doi_clean = clean_doi(doi)
-    url = f"https://api.unpaywall.org/v2/{quote(doi_clean, safe='/')}?email={quote(email)}"
-
-    try:
-        data = http_get_json(url)
-    except Exception as e:
-        log(f"  Unpaywall API error: {e}")
-        return {}
-
-    result = {}
-
-    # Check best_oa_location first
-    best = data.get("best_oa_location") or {}
-    if best.get("url_for_pdf"):
-        result["pdf_url"] = best["url_for_pdf"]
-        return result
-
-    # Check all oa_locations
-    for loc in data.get("oa_locations") or []:
-        if loc.get("url_for_pdf"):
-            result["pdf_url"] = loc["url_for_pdf"]
-            return result
-
-    # No direct PDF — collect landing pages from repositories
-    for loc in data.get("oa_locations") or []:
-        if loc.get("url"):
-            result.setdefault("landing_urls", []).append(loc["url"])
-
-    # Also store the title for Google Scholar fallback
-    if data.get("title"):
-        result["title"] = data["title"]
-
-    return result
-
-
-def extract_pdf_from_landing_page(landing_url):
-    """Scrape a repository landing page for PDF download links."""
-    try:
-        body, final_url = http_get(
-            landing_url,
-            headers={"Accept": "text/html,application/xhtml+xml"},
-            timeout=30,
-        )
-        html = body.decode("utf-8", errors="replace")
-    except Exception as e:
-        log(f"  Failed to fetch landing page {landing_url}: {e}")
-        return None
-
-    parsed = urlparse(final_url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}"
-
-    pdf_links = []
-
-    # Pattern 1: Direct .pdf links
-    pdf_links += re.findall(r'href="([^"]+\.pdf[^"]*)"', html, re.IGNORECASE)
-
-    # Pattern 2: HAL /document endpoint
-    pdf_links += re.findall(r'href="([^"]+/document)"', html)
-
-    # Pattern 3: DSpace bitstream links
-    pdf_links += re.findall(r'href="([^"]+/bitstream/[^"]+)"', html)
-
-    # Pattern 4: Pure/institutional repository file links
-    pdf_links += re.findall(r'href="([^"]+/files?/[^"]+\.pdf[^"]*)"', html, re.IGNORECASE)
-
-    # Pattern 5: Generic download links with PDF
-    pdf_links += re.findall(r'href="([^"]*download[^"]*\.pdf[^"]*)"', html, re.IGNORECASE)
-
-    if not pdf_links:
-        return None
-
-    # Resolve relative URLs
-    resolved = []
-    for link in pdf_links:
-        if link.startswith("http"):
-            resolved.append(link)
-        elif link.startswith("//"):
-            resolved.append(f"https:{link}")
-        elif link.startswith("/"):
-            resolved.append(f"{base_url}{link}")
-        else:
-            resolved.append(urljoin(final_url, link))
-
-    # Deduplicate while preserving order
-    seen = set()
-    unique = []
-    for link in resolved:
-        if link not in seen:
-            seen.add(link)
-            unique.append(link)
-
-    # Filter out supplementary materials
-    main = [
-        l for l in unique
-        if not re.search(r"(?i)supplement|appendix|supp_|_s\d", l)
-    ]
-
-    return (main or unique)[0]
-
-
-# =============================================================================
-# Tier 4: Google Scholar via SerpAPI
-# =============================================================================
-
-def search_google_scholar(title, api_key):
-    """Search Google Scholar for free PDF links using SerpAPI."""
-    if not api_key:
-        log("  No SERPAPI_API_KEY set, skipping Google Scholar")
-        return None
-
-    params = urlencode({
-        "engine": "google_scholar",
-        "q": title,
-        "api_key": api_key,
-        "num": 5,
-    })
-    url = f"https://serpapi.com/search.json?{params}"
-
-    try:
-        data = http_get_json(url, timeout=30)
-    except Exception as e:
-        log(f"  SerpAPI error: {e}")
-        return None
-
-    # Look through organic results for PDF resources
-    pdf_links = []
-    for result in data.get("organic_results", []):
-        # Check resources array (SerpAPI marks PDFs explicitly)
-        for resource in result.get("resources", []):
-            if resource.get("file_format", "").upper() == "PDF":
-                pdf_link = resource.get("link")
-                if pdf_link:
-                    log(f"  Found PDF via Google Scholar: {pdf_link}")
-                    pdf_links.append(pdf_link)
-
-        # Check if the result link itself points to a known open-access host
-        link = result.get("link", "")
-        if re.search(r"arxiv\.org/pdf/", link):
-            log(f"  Found arXiv PDF: {link}")
-            pdf_links.append(link)
-
-    return pdf_links
-
-
-# =============================================================================
-# Tier 4b: Browser-based PDF download (Playwright)
-# =============================================================================
-
-def download_pdf_via_browser(url, output_path, timeout=30):
-    """Download a PDF using headless Chrome via Playwright.
-
-    Handles sites that require JS rendering to find/access PDF links.
-    Falls back gracefully if Playwright is not installed.
+    The tab is opened at the end of the front window, never focused, and closed
+    again whatever happens.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        log("  Playwright not available, skipping browser download")
-        return False
+    if sys.platform != "darwin":
+        log("The Chrome step is macOS only, skipping")
+        return None
+    if not chrome.chrome_running():
+        log("Google Chrome is not running, skipping the Chrome step")
+        return None
 
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                accept_downloads=True,
-                user_agent=USER_AGENT,
-            )
-            page = context.new_page()
-
-            # Navigate to the URL (follows redirects)
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
-            time.sleep(2)
-
-            final_url = page.url
-
-            # Strategy 1: Check if we landed on a PDF
-            content_type = page.evaluate("() => document.contentType")
-            if content_type and "pdf" in content_type.lower():
-                pdf_bytes = page.evaluate(
-                    """() => {
-                        const xhr = new XMLHttpRequest();
-                        xhr.open('GET', window.location.href, false);
-                        xhr.responseType = 'arraybuffer';
-                        xhr.send();
-                        return Array.from(new Uint8Array(xhr.response));
-                    }"""
-                )
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                with open(output_path, "wb") as f:
-                    f.write(bytes(pdf_bytes))
-                browser.close()
-                if validate_pdf(output_path):
-                    return True
-                os.unlink(output_path)
-
-            # Strategy 2: Find PDF links in rendered HTML and download via requests
-            html = page.content()
-            browser.close()
-
-            # Extract PDF links from rendered page
-            pdf_links = []
-            pdf_links += re.findall(r'href="([^"]+\.pdf[^"]*)"', html, re.IGNORECASE)
-            pdf_links += re.findall(r'href="([^"]+/bitstream/[^"]+)"', html)
-            pdf_links += re.findall(r'href="([^"]*download[^"]*\.pdf[^"]*)"', html, re.IGNORECASE)
-
-            parsed = urlparse(final_url)
-            base_url = f"{parsed.scheme}://{parsed.netloc}"
-
-            for link in pdf_links:
-                if link.startswith("http"):
-                    abs_link = link
-                elif link.startswith("//"):
-                    abs_link = f"https:{link}"
-                elif link.startswith("/"):
-                    abs_link = f"{base_url}{link}"
-                else:
-                    abs_link = urljoin(final_url, link)
-
-                if re.search(r"(?i)supplement|appendix", abs_link):
-                    continue
-
-                if download_pdf(abs_link, output_path):
-                    return True
-
-            return False
-
-    except Exception as e:
-        log(f"  Browser download failed: {e}")
-        return False
-
-
-# =============================================================================
-# Tier 5: Sci-Hub — opt-in only (--scihub)
-#
-# Sci-Hub hosts copyrighted papers without the publishers' permission. Whether
-# using it is lawful depends on where you are, and it is against the terms of
-# most publishers and many institutions either way. It is off by default.
-# Enable at your own risk — I wouldn't. The legitimate routes above (Unpaywall,
-# repositories, preprint servers) plus institutional_fetch.py cover most papers.
-# =============================================================================
-
-def get_scihub_mirrors():
-    """Get current Sci-Hub mirror URLs from Wikipedia."""
-    try:
-        body, _ = http_get(
-            "https://en.wikipedia.org/wiki/Sci-Hub",
-            timeout=15,
-        )
-        html = body.decode("utf-8", errors="replace")
-        # Look for sci-hub URLs in the page
-        mirrors = re.findall(r'https?://sci-hub\.[a-z.]{2,10}', html)
-        # Deduplicate preserving order
-        seen = set()
-        unique = []
-        for m in mirrors:
-            if m not in seen:
-                seen.add(m)
-                unique.append(m)
-        if unique:
-            log(f"  Found {len(unique)} Sci-Hub mirrors from Wikipedia: {unique}")
-            return unique
-    except Exception as e:
-        log(f"  Could not fetch Sci-Hub mirrors from Wikipedia: {e}")
-    return []
-
-
-# Known-working mirrors (verified 2026-05). The Wikipedia list is frequently
-# stale: sci-hub.se can be unreachable and sci-hub.ee returns 403, while .st/.ru
-# 302-redirect to .sg, and .sg/.wf serve PDFs directly. We always try these first,
-# then append any extra mirrors scraped from Wikipedia.
-SCIHUB_KNOWN_GOOD = [
-    "https://sci-hub.st", "https://sci-hub.ru", "https://sci-hub.sg",
-    "https://sci-hub.se", "https://sci-hub.wf",
-]
-SCIHUB_FALLBACK_MIRRORS = SCIHUB_KNOWN_GOOD
-
-# Module-level cache so mirrors are looked up at most once per session
-_scihub_mirrors_cache = None
-
-
-def get_scihub_pdf_url(doi, mirrors=None):
-    """Get PDF URL from Sci-Hub mirrors."""
-    global _scihub_mirrors_cache
-    if mirrors is None:
-        if _scihub_mirrors_cache is None:
-            # Known-good mirrors first, then any extra Wikipedia mirrors, deduped.
-            merged = list(SCIHUB_KNOWN_GOOD)
-            for m in get_scihub_mirrors():
-                if m not in merged:
-                    merged.append(m)
-            _scihub_mirrors_cache = merged
-        mirrors = _scihub_mirrors_cache
-
-    doi_clean = clean_doi(doi)
-
-    for mirror in mirrors:
-        try:
-            page_url = f"{mirror}/{doi_clean}"
-            body, final_url = http_get(page_url, timeout=30)
-            html = body.decode("utf-8", errors="replace")
-
-            if "article is not available" in html:
-                continue
-
-            # Pattern 1: <object data="...pdf">
-            m = re.search(r'<object[^>]+data\s*=\s*["\']([^"\'#]+\.pdf)', html)
-            # Pattern 2: fetch() call
-            if not m:
-                m = re.search(r"fetch\(['\"]([^'\"]+\.pdf)", html)
-            # Pattern 3: embed/iframe src
-            if not m:
-                m = re.search(r'(?:embed|iframe)[^>]+src=["\']([^"\'#]+\.pdf)', html)
-            # Pattern 4: download-button href / location.href (sci-hub.sg style)
-            if not m:
-                m = re.search(r'(?:href|location(?:\.href)?)\s*=\s*["\']([^"\'#]+\.pdf)', html)
-
-            if m:
-                pdf_url = m.group(1)
-                # Resolve relative URLs against the FINAL (post-redirect) host —
-                # mirrors like .st/.ru redirect to .sg, so the original `mirror`
-                # would otherwise point at the wrong host.
-                host_m = re.match(r'https?://[^/]+', final_url or page_url)
-                host = host_m.group(0) if host_m else mirror
-                if pdf_url.startswith("//"):
-                    pdf_url = f"https:{pdf_url}"
-                elif pdf_url.startswith("/"):
-                    pdf_url = f"{host}{pdf_url}"
-                elif not pdf_url.startswith("http"):
-                    pdf_url = f"{host}/{pdf_url}"
-                return pdf_url, page_url
-
-        except Exception:
-            pass
-
-        time.sleep(0.5)
-
-    return None, None
+        with chrome.ChromeTab() as tab:
+            if not tab.javascript_allowed():
+                log(JS_MENU_HINT)
+                return None
+            for url, source in browser_candidates(tab, doi, blocked_links):
+                log(f"  Chrome candidate ({source}): {url}")
+                if accept_bytes(chrome.nav_then_fetch(tab, url), tmp_path,
+                                doi, title, pages, "browser fetch"):
+                    return url
+            if ebsco_profile:
+                log("  Chrome candidate (EBSCOhost): searching by DOI")
+                if accept_bytes(chrome.fetch_ebsco(tab, doi, ebsco_profile, all_db=True),
+                                tmp_path, doi, title, pages, "EBSCOhost"):
+                    return "EBSCOhost"
+            else:
+                log("  INSTITUTION_EBSCO_PROFILE is not set, skipping the EBSCO candidate")
+    except chrome.ChromeError as e:
+        log(f"  Chrome step stopped: {e}")
+    return None
 
 
 # =============================================================================
 # Orchestration
 # =============================================================================
 
-def get_metadata_from_crossref(doi):
-    """Fetch paper title and authors from Crossref API."""
-    doi_clean = clean_doi(doi)
-    url = f"https://api.crossref.org/works/{quote(doi_clean, safe='/')}"
-    try:
-        data = http_get_json(url, timeout=15)
-        msg = data.get("message", {})
-        title = (msg.get("title") or [None])[0]
-        authors = []
-        for a in msg.get("author", []):
-            family = a.get("family", "")
-            if family:
-                authors.append(family)
-        return {"title": title, "authors": authors}
-    except Exception as e:
-        log(f"  Crossref lookup failed: {e}")
-    return {}
+def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
+                   force=False, use_playwright=False, use_browser=True,
+                   ebsco_profile=""):
+    """Returns (path, candidates). path is None on failure.
 
-
-def build_scholar_query(title, authors=None):
-    """Build a Google Scholar search query from title and authors."""
-    if not title:
-        return None
-    # For short titles, add author names to disambiguate
-    query = title
-    if authors and len(title) < 60:
-        # Add first 2 author surnames
-        author_str = " ".join(authors[:2])
-        query = f"{title} {author_str}"
-    return query
-
-
-def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR,
-                   email=None, force=False, use_scihub=False):
-    """Main download logic. Returns (path, candidate_urls) tuple.
-
-    path is the file path on success, None on failure.
-    candidate_urls is a list of URLs found during the process (for manual fallback).
+    `candidates` is an ordered list of (url, note) for manual download.
     """
     doi = clean_doi(doi)
     cache_path = doi_to_cache_path(doi, cache_dir)
-    email = email or os.environ.get("RESEARCHER_EMAIL", DEFAULT_EMAIL)
-    serpapi_key = os.environ.get("SERPAPI_API_KEY", "")
-    candidate_urls = []  # Collect URLs for manual download fallback
-
-    # Tier 1: Cache
     if not force and validate_pdf(cache_path):
         log("Found in cache")
         return cache_path, []
 
     os.makedirs(cache_dir, exist_ok=True)
+    meta = crossref_metadata(doi)
+    query_title = title or meta.get("search_title")
+    candidates = []
 
-    # Always add the DOI URL as a candidate for manual download
-    candidate_urls.append(f"https://doi.org/{doi}")
+    # A downloaded PDF is moved onto the cache path only once it is a valid
+    # PDF, so an interrupted or refused download never stands in for the paper.
+    handle, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix="part-", suffix=".pdf")
+    os.close(handle)
+    os.unlink(tmp_path)
 
-    # Tier 1b: OSF preprints
-    osf_url = get_osf_pdf_url(doi)
-    if osf_url:
-        log("Trying OSF direct download...")
-        if download_pdf(osf_url, cache_path):
-            log("Downloaded from OSF")
-            return cache_path, candidate_urls
+    blocked = []
+    try:
+        log(f"Fetching {doi} via fetchpdf...")
+        if fetchpdf_download(doi, tmp_path, email, use_playwright):
+            os.replace(tmp_path, cache_path)
+            log("Downloaded via fetchpdf")
+            return cache_path, candidates
 
-    # Tier 2: Unpaywall
-    log("Querying Unpaywall...")
-    unpaywall = get_unpaywall_info(doi, email)
+        api_keys = serpapi_keys(load_key_file())
+        query = build_scholar_query(query_title, meta.get("authors"))
+        if api_keys and query:
+            log(f"Searching Google Scholar for: {query[:80]}")
+            links = scholar_pdf_links(query, api_keys)
+            accepted, blocked, wrong = scholar_download(
+                links, tmp_path, doi, meta.get("title") or title, meta.get("pages"))
+            if accepted:
+                os.replace(tmp_path, cache_path)
+                log(f"Downloaded via Google Scholar: {accepted}")
+                return cache_path, candidates
+            candidates += [(u, "Scholar link, no PDF by plain HTTP") for u in blocked]
+            candidates += [(u, "Scholar link, a different paper") for u in wrong]
+        elif not api_keys:
+            log("No SerpAPI key in the environment or the key file, skipping the Google Scholar step")
+        else:
+            log("No title available for the Google Scholar step")
 
-    if unpaywall.get("pdf_url"):
-        candidate_urls.append(unpaywall["pdf_url"])
-        log(f"  Found direct PDF URL: {unpaywall['pdf_url']}")
-        if download_pdf(unpaywall["pdf_url"], cache_path):
-            log("Downloaded via Unpaywall (direct PDF)")
-            return cache_path, candidate_urls
+        if use_browser:
+            log("Trying the signed-in Chrome...")
+            kept = browser_download(doi, blocked, tmp_path, meta.get("title") or title,
+                                    meta.get("pages"), ebsco_profile)
+            if kept:
+                os.replace(tmp_path, cache_path)
+                log(f"Downloaded via Chrome: {kept}")
+                return cache_path, []
+        else:
+            log("--no-browser, skipping the Chrome step")
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
-    # Tier 3: Landing page scrape
-    for landing_url in unpaywall.get("landing_urls", []):
-        candidate_urls.append(landing_url)
-        log(f"  Scraping landing page: {landing_url}")
-        time.sleep(0.5)
-        pdf_url = extract_pdf_from_landing_page(landing_url)
-        if pdf_url:
-            candidate_urls.append(pdf_url)
-            log(f"  Found PDF link: {pdf_url}")
-            if download_pdf(pdf_url, cache_path):
-                log("Downloaded via landing page scrape")
-                return cache_path, candidate_urls
-
-    # Tier 4: Google Scholar via SerpAPI
-    crossref = get_metadata_from_crossref(doi) if not title else {}
-    search_title = title or unpaywall.get("title") or crossref.get("title")
-    authors = crossref.get("authors", [])
-    scholar_query = build_scholar_query(search_title, authors)
-    scholar_urls = []
-    if scholar_query:
-        log(f"Searching Google Scholar for: {scholar_query[:80]}...")
-        time.sleep(0.5)
-        scholar_urls = search_google_scholar(scholar_query, serpapi_key) or []
-        candidate_urls.extend(scholar_urls)
-        for scholar_url in scholar_urls:
-            if download_pdf(scholar_url, cache_path):
-                log("Downloaded via Google Scholar")
-                return cache_path, candidate_urls
-    else:
-        log("No title available for Google Scholar search")
-
-    # Tier 4b: Browser-based download for Google Scholar URLs that failed
-    # (e.g. Academia.edu login wall)
-    for scholar_url in scholar_urls:
-        log(f"  Trying browser download: {scholar_url}")
-        if download_pdf_via_browser(scholar_url, cache_path):
-            log("Downloaded via browser automation (Google Scholar link)")
-            return cache_path, candidate_urls
-
-    # Tier 4c: Browser automation for landing pages that failed HTML scrape
-    for landing_url in unpaywall.get("landing_urls", []):
-        log(f"  Trying browser automation for landing page: {landing_url}")
-        if download_pdf_via_browser(landing_url, cache_path):
-            log("Downloaded via browser automation (landing page)")
-            return cache_path, candidate_urls
-
-    # Tier 5: Sci-Hub (only when explicitly enabled — see the note above)
-    if use_scihub:
-        log("Trying Sci-Hub...")
-        time.sleep(1)
-        scihub_url, referer = get_scihub_pdf_url(doi)
-        if scihub_url:
-            candidate_urls.append(scihub_url)
-            if download_pdf(scihub_url, cache_path, referer=referer):
-                log("Downloaded via Sci-Hub")
-                return cache_path, candidate_urls
-
-    return None, candidate_urls
-
-
-# =============================================================================
-# CLI
-# =============================================================================
-
-def pick_best_url_for_manual(candidate_urls):
-    """Pick the best URL for manual download (prefer DOI, then direct PDFs)."""
-    if not candidate_urls:
-        return None
-    # Prefer doi.org link (works with institutional access)
-    for u in candidate_urls:
-        if "doi.org/" in u:
-            return u
-    # Then prefer direct PDF links
-    for u in candidate_urls:
-        if u.endswith(".pdf") or "/pdf/" in u:
-            return u
-    return candidate_urls[0]
+    candidates.append((f"https://doi.org/{doi}", "publisher page"))
+    return None, candidates
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download academic PDF by DOI with multi-source fallback."
-    )
+        description="Download an academic PDF by DOI, verified against the DOI.")
     parser.add_argument("--doi", required=True, help="DOI of the paper")
-    parser.add_argument("--title", help="Paper title (for Google Scholar fallback)")
+    parser.add_argument("--title", help="Paper title, for the Google Scholar step")
     parser.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR,
                         help=f"Cache directory (default: {DEFAULT_CACHE_DIR})")
-    parser.add_argument("--email", help="Email for Unpaywall API")
+    parser.add_argument("--email", help="Contact email for the OA APIs")
     parser.add_argument("--force", action="store_true", help="Re-download even if cached")
-    parser.add_argument("--scihub", action="store_true",
-                        help="Also try Sci-Hub (off by default; enable at your own risk)")
+    parser.add_argument("--playwright", action="store_true",
+                        help="Let fetchpdf render JS-heavy pages in a headless browser")
+    parser.add_argument("--no-browser", action="store_true",
+                        help="Skip the step that fetches through the user's signed-in Chrome")
     parser.add_argument("--open", action="store_true",
-                        help="On failure, ask user whether to open best URL in browser")
-
+                        help="On failure, open the publisher page in the browser")
     args = parser.parse_args()
 
-    path, candidate_urls = download_paper(
+    email = (args.email or os.environ.get("RESEARCHER_EMAIL")
+             or os.environ.get("EMAIL") or DEFAULT_EMAIL)
+    os.environ["EMAIL"] = email
+    keys = load_key_file()
+    for fetchpdf_name, file_name in FETCHPDF_KEY_NAMES.items():
+        if keys.get(file_name):
+            os.environ.setdefault(fetchpdf_name, keys[file_name])
+
+    path, candidates = download_paper(
         doi=args.doi,
         title=args.title,
         cache_dir=args.cache_dir,
-        email=args.email,
+        email=email,
         force=args.force,
-        use_scihub=args.scihub,
+        use_playwright=args.playwright,
+        use_browser=not args.no_browser,
+        ebsco_profile=keys.get("INSTITUTION_EBSCO_PROFILE", ""),
     )
 
     if path:
-        print(os.path.abspath(path))
+        print(os.path.abspath(path), file=STDOUT)
         sys.exit(0)
 
-    log("All automatic download sources exhausted.")
+    log("No verified PDF for this DOI.")
+    for url, note in candidates:
+        log(f"  - {url}  [{note}]")
 
-    if candidate_urls:
-        log(f"Candidate URLs found: {len(candidate_urls)}")
-        for u in candidate_urls:
-            log(f"  - {u}")
-
-    best_url = pick_best_url_for_manual(candidate_urls)
-
-    if args.open and best_url:
-        log(f"\nOpening in browser: {best_url}")
+    if args.open and candidates:
+        best = next((u for u, _ in candidates if "doi.org/" in u), candidates[0][0])
+        log(f"Opening in browser: {best}")
         import subprocess
-        import platform
-        if platform.system() == "Darwin":
-            subprocess.run(["open", best_url])
-        elif platform.system() == "Linux":
-            subprocess.run(["xdg-open", best_url])
-        else:
-            subprocess.run(["start", best_url], shell=True)
-        expected_cache = doi_to_cache_path(args.doi, args.cache_dir)
-        log(f"Save the PDF to: {os.path.abspath(expected_cache)}")
-        # Exit with code 2 to signal "opened in browser, waiting for manual download"
+        subprocess.run(["open", best])
+        log(f"Save the PDF to: {os.path.abspath(doi_to_cache_path(args.doi, args.cache_dir))}")
         sys.exit(2)
 
     sys.exit(1)
