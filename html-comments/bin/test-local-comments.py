@@ -314,13 +314,19 @@ def main():
                              .replace("<\\/script>", "</script>") + "</body>")
     open(driven, "w", encoding="utf-8").write(doc)
 
+    chrome_args = [CHROME, "--headless", "--disable-gpu", "--dump-dom",
+                   "--virtual-time-budget=6000", "file://" + driven]
+    if sys.platform.startswith("linux"):
+        # The box does not enable unprivileged Chromium namespaces. This test
+        # opens only its generated local fixture.
+        chrome_args.insert(2, "--no-sandbox")
     proc = subprocess.run(
-        [CHROME, "--headless", "--disable-gpu", "--dump-dom",
-         "--virtual-time-budget=6000", "file://" + driven],
+        chrome_args,
         capture_output=True, text=True)
     found = re.search(r'<pre id="results">(.*?)</pre>', proc.stdout, re.S)
     if not found:
-        sys.exit("the harness produced no results; the page probably threw")
+        sys.exit("the harness produced no results (Chrome exit " +
+                 str(proc.returncode) + "): " + proc.stderr[:500])
     import html as htmlmod
     results = json.loads(htmlmod.unescape(found.group(1)))
 
