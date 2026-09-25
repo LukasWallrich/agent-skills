@@ -1,6 +1,10 @@
 ---
 name: html-comments
-description: Add a Google-Docs-style comment + suggested-edit layer to any static HTML page (Quarto reports, plain HTML), whether opened locally as a file or published anywhere (surge.sh, GitHub Pages), and maintain the shared overlay assets. Use when the user wants reviewers to be able to comment on / suggest edits to an HTML page, or to annotate an HTML plan themselves. To publish a page with the layer already on, see deploy-html; to read the collected comments back or apply them to the source, see review-comments.
+description: >-
+  Add a comment and suggested-edit layer to a static HTML page. Use local mode
+  for one reviewer's private markup in the browser, or shared mode for several
+  reviewers and persistent comments. For publishing to others see deploy-html;
+  for reading shared comments back see review-comments.
 ---
 
 # HTML Comments — reviewer comments + suggested edits on static HTML
@@ -10,6 +14,35 @@ dependencies) that lets readers select text, leave threaded comments or suggeste
 resolve/reopen threads, and see everyone else's comments. Storage is a Google Apps Script
 endpoint of your own (source + deploy recipe in `apps_script/`), configured in
 `~/.claude/html-comments.config.json`.
+
+## Local-only mode: one reader, no shared endpoint
+
+When one reviewer marks up one document once, skip the slug and the Apps Script endpoint:
+
+```sh
+~/.claude/skills/html-comments/bin/local-comments.py proposal.html
+```
+
+That writes `proposal.commentable.html` with the overlay and its stylesheet inlined, so the
+result is one self-contained file that works from disk, an attachment, or any host. It is
+the same overlay as the shared mode, with `endpoint: "local"`: records go to the browser's
+localStorage instead of the network, keyed by project name, so they survive reloads and
+closing the tab. A **Clear** button next to the copy button wipes them for a fresh round. The reviewer selects text, picks Comment or Suggest, and presses **Copy review
+for Claude** to hand the whole set back as text. The name field is hidden and seeded, since
+there is only one reviewer.
+
+Because the anchoring is the shared mode's, every exported comment carries the quote plus
+the text either side of it, so a one-word selection is still locatable in the source.
+
+`--project` overrides the storage key, which otherwise comes from the filename. No shared
+slug check is involved; use a distinct key for each document in the same browser.
+
+Reach for the shared endpoint below instead when several people comment on the same page,
+when threads have to survive the tab, or when the comments need reading back without the
+reviewer pasting them.
+
+`bin/test-local-comments.py` drives local mode through eighteen cases in headless Chrome and
+exits non-zero on any failure. Run it after touching `assets/html-comments.js`.
 
 ## ⚠️ FIRST: choose a unique `data-project` slug
 
@@ -128,8 +161,12 @@ project's slug — change it.
 ### What reviewers see
 
 A floating button bottom-right (badge = open-thread count) opens the sidebar; selecting text
-offers 💬 Comment or ✏️ Suggest. Threads can be replied to, resolved and reopened. Posting
-requires a name, remembered in that browser.
+offers 💬 Comment or ✏️ Suggest. Threads can be replied to, resolved and reopened, and
+whoever posted a comment or reply can edit or delete it. Posting requires a name, remembered
+in that browser.
+
+Authorship is the name in the browser, so anyone typing the same name can edit or delete
+that person's records.
 
 There is no auth and the endpoint is public-by-URL: keep sensitive content off any page
 carrying the layer, and treat names as claims, not identities.

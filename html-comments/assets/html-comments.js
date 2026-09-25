@@ -7,12 +7,12 @@
  *   READ : GET  ?action=rows&project=<p> -> {ok:true,rows:[...]}  (append-only log)
  *
  * All application data is stored in the `note` field as a JSON string; `vote`
- * is used as the record type (comment|suggestion|reply|resolve|reopen|delete).
+ * is used as the record type (comment|suggestion|reply|edit|resolve|reopen|delete).
  */
 (function () {
   'use strict';
 
-  var HC_VERSION = '2026-08-19.1';
+  var HC_VERSION = '2026-09-25.1';
 
   // Loading the overlay twice (e.g. a page that both inlines the script and
   // loads it from the asset host) would produce two sidebars, two toolbars and
@@ -34,6 +34,9 @@
     ? SCRIPT.dataset
     : (window.HC_CONFIG || (SCRIPT ? SCRIPT.dataset : {}));
   var ENDPOINT = (CFG.endpoint || '').trim();
+  // "local" keeps every record in this tab instead of a shared endpoint: one
+  // reviewer, one pass, nothing published. See "Throwaway mode" in SKILL.md.
+  var LOCAL = ENDPOINT === 'local';
   var PROJECT = (CFG.project || '').trim();
   var DEBUG_ROWS = CFG.debugRows || ''; // optional inline test rows (JSON)
 
@@ -72,7 +75,7 @@
       WHERE + '; overlay disabled.');
     return;
   }
-  if (!/^https?:\/\//.test(ENDPOINT)) {
+  if (!LOCAL && !/^https?:\/\//.test(ENDPOINT)) {
     configError('endpoint must be a full http(s) URL (got "' + ENDPOINT + '") in ' +
       WHERE + '; overlay disabled.');
     return;
@@ -87,6 +90,14 @@
     showSug: 'hc-showsug-' + PROJECT,
     drafts: 'hc-drafts-' + PROJECT
   };
+
+  // Local mode has exactly one reviewer, so asking who they are is pure
+  // friction. Seed a name, and the composer hides the field.
+  if (LOCAL) {
+    try {
+      if (!localStorage.getItem(LS.name)) localStorage.setItem(LS.name, 'Reviewer');
+    } catch (e) { /* private window: the composer falls back to asking */ }
+  }
 
   /* ------------------------------------------------------------------ *
    * 1. Small utilities                                                 *
@@ -273,34 +284,29 @@
     return fetchJSON(ENDPOINT, opts);
   }
 
-  // Post a record; on network failure, queue it in the outbox for retry.
+  // Persist before sending so a reload or an overlapping read cannot discard
+  // the optimistic change. Only a server read containing its itemId retires it;
+  // a POST acknowledgement alone does not make an older GET safe to render.
+  var posting = {}; // in-flight or acknowledged writes awaiting read-back
   function postRecord(payload) {
+    if (!LOCAL) {
+      var box = readOutbox();
+      if (!box.some(function (p) { return p.itemId === payload.itemId; })) box.push(payload);
+      writeOutbox(box);
+    }
+    posting[payload.itemId] = true;
     return rawPost(payload).then(function (res) {
       if (!res || res.ok !== true) throw new Error('server rejected');
       return res;
     }).catch(function (err) {
-      var box = readOutbox();
-      box.push(payload);
-      writeOutbox(box);
+      delete posting[payload.itemId];
       console.warn('[html-comments] POST failed, queued in outbox:', err);
       return { ok: false, queued: true };
     });
   }
 
-  // Drop the given itemIds from the outbox, re-reading it first. A record queued
-  // by postRecord while a flush was in flight must survive: writing back a list
-  // computed from the pre-flush snapshot would silently delete it.
-  function dropFromOutbox(sentIds) {
-    if (!sentIds.length) return;
-    var keep = {};
-    sentIds.forEach(function (id) { keep[id] = true; });
-    writeOutbox(readOutbox().filter(function (p) {
-      return !(p && p.itemId && keep[p.itemId]);
-    }));
-  }
-
   function flushOutbox() {
-    var box = readOutbox();
+    var box = readOutbox().filter(function (p) { return !posting[p.itemId]; });
     if (!box.length) return Promise.resolve(0);
     var sent = [];
     return box.reduce(function (chain, payload, i) {
@@ -310,11 +316,15 @@
         return i === 0 ? null : new Promise(function (r) { setTimeout(r, FLUSH_SPACING); });
       }).then(function () {
         return rawPost(payload).then(function (res) {
-          if (res && res.ok === true && payload.itemId) sent.push(payload.itemId);
+          if (res && res.ok === true && payload.itemId) {
+            sent.push(payload.itemId);
+            posting[payload.itemId] = true;
+          }
         }).catch(function () {});
       });
     }, Promise.resolve()).then(function () {
-      dropFromOutbox(sent);
+      // Keep acknowledged writes until fetchRows observes them, including if
+      // the next read fails or was already in flight when the write arrived.
       return sent.length;
     });
   }
@@ -329,13 +339,128 @@
   function fetchRows(attempt) {
     attempt = attempt || 1;
     var url = ENDPOINT + (ENDPOINT.indexOf('?') >= 0 ? '&' : '?') +
-      'action=rows&project=' + encodeURIComponent(PROJECT);
-    return fetchJSON(url, { method: 'GET' }).catch(function (err) {
+      'action=rows&project=' + encodeURIComponent(PROJECT) +
+      '&_hc=' + encodeURIComponent(genId());
+    // Apps Script redirects to a response URL. Reusing a cached redirect can
+    // return an old log after a successful deletion. Bypass both cache layers.
+    return fetchJSON(url, { method: 'GET', cache: 'no-store' }).catch(function (err) {
       if (attempt >= ROWS_READ_TRIES) throw err;
       return new Promise(function (resolve) {
         setTimeout(function () { resolve(fetchRows(attempt + 1)); }, ROWS_RETRY_MS * attempt);
       });
     });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 2b. Local transport: the same append-only log, kept in this browser. *
+   * ------------------------------------------------------------------ */
+
+  // localStorage, keyed by project, so the log outlives the tab and comes
+  // back when the same file is opened again in this browser.
+  var LOCAL_KEY = 'hc-local-' + PROJECT;
+
+  function localLog() {
+    try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || '[]'); }
+    catch (e) { return []; }
+  }
+
+  function localAppend(row) {
+    var log = localLog();
+    log.push(row);
+    try { localStorage.setItem(LOCAL_KEY, JSON.stringify(log)); }
+    catch (e) { /* a private window can refuse; the tab still works */ }
+  }
+
+  function localClear() {
+    try { localStorage.removeItem(LOCAL_KEY); } catch (e) {}
+    ROWS.length = 0;
+    renderAll(true);
+  }
+
+  if (LOCAL) {
+    rawPost = function (payload) {
+      localAppend(payload);
+      return Promise.resolve({ ok: true });
+    };
+    fetchRows = function () {
+      return Promise.resolve({ ok: true, rows: localLog() });
+    };
+  }
+
+  // What the reviewer hands back. Every entry carries the anchor's own context,
+  // so a one-word quote is still locatable in the source.
+  function localMarkdown() {
+    var out = ['Review of ' + (document.title || 'this page'), ''];
+    var n = 0;
+    buildThreads(localLog()).forEach(function (t) {
+      n++;
+      var a = t.root.note.anchor || {};
+      var suggestion = t.kind === 'suggestion';
+      out.push('### ' + n + '. ' + (suggestion ? 'Suggested edit' : 'Comment'));
+      out.push('Anchor: "' + (a.quote || '') + '"');
+      var pre = (a.prefix || '').slice(-60), suf = (a.suffix || '').slice(0, 60);
+      if (pre || suf) {
+        out.push('Context: ...' + pre + '[[' + (a.quote || '') + ']]' + suf + '...');
+      }
+      if (suggestion) out.push('Replace with: "' + (t.root.note.replacement || '') + '"');
+      if (t.root.note.text) out.push((suggestion ? 'Note: ' : '') + t.root.note.text);
+      t.replies.forEach(function (r) { if (r.note.text) out.push('Reply: ' + r.note.text); });
+      out.push('');
+    });
+    if (!n) out.push('(no comments)');
+    return out.join('\n');
+  }
+
+  // Two buttons, bottom left, clear of the comment rail on the right:
+  // copy the review out, or wipe the stored log to start a fresh round.
+  function mountExport() {
+    var pill = 'position:fixed;bottom:14px;z-index:2147483000;border-radius:999px;' +
+      'padding:9px 16px;font:14px system-ui,-apple-system,sans-serif;cursor:pointer;' +
+      'box-shadow:0 6px 20px rgba(0,0,0,.22)';
+    var clr = document.createElement('button');
+    clr.type = 'button';
+    clr.className = 'hc-clear';
+    clr.textContent = 'Clear';
+    clr.title = 'Delete every stored comment on this page';
+    clr.style.cssText = pill + ';left:196px;border:1px solid #12181b;background:#fff;color:#12181b';
+    clr.addEventListener('click', function () {
+      if (clr.textContent === 'Clear') {
+        clr.textContent = 'Really clear?';
+        setTimeout(function () { clr.textContent = 'Clear'; }, 2500);
+        return;
+      }
+      localClear();
+      clr.textContent = 'Clear';
+    });
+    document.body.appendChild(clr);
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'hc-export';
+    btn.textContent = 'Copy review for Claude';
+    btn.style.cssText = pill + ';left:14px;border:1px solid #12181b;background:#12181b;color:#fff';
+    btn.addEventListener('click', function () {
+      var text = localMarkdown();
+      function done() {
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = 'Copy review for Claude'; }, 1400);
+      }
+      function fallback() {
+        // file:// is not a secure context, so the clipboard API is unavailable
+        var box = document.createElement('textarea');
+        box.value = text;
+        box.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(box);
+        box.select();
+        try { document.execCommand('copy'); done(); }
+        catch (e) { window.prompt('Copy the review:', text); }
+        box.remove();
+      }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done, fallback);
+      } else { fallback(); }
+    });
+    document.body.appendChild(btn);
   }
 
   /* ------------------------------------------------------------------ *
@@ -834,7 +959,7 @@
   }
 
   function buildThreads(rows) {
-    var roots = {}, statusEvents = {}, deleted = {}, replies = {};
+    var roots = {}, statusEvents = {}, deleted = {}, replies = {}, edits = {};
     rows.forEach(function (row) {
       var note = parseNote(row);
       var rec = {
@@ -858,6 +983,12 @@
           // reopen made after it. bin/resolve.py reduces the same way.
           statusEvents[note.parentId] = rec;
           break;
+        case 'edit':
+          // Rewrites the text (and, on a suggestion, the replacement) of the
+          // record it names. Row order decides, as for resolve/reopen: the last
+          // edit wins. The anchor is never edited.
+          edits[note.parentId] = rec;
+          break;
         case 'delete':
           // target may be a thread root or a reply itemId
           deleted[note.parentId] = true;
@@ -865,12 +996,22 @@
       }
     });
 
+    // rec.note is a fresh parse of the row, so editing it in place is safe.
+    function applyEdit(rec) {
+      var e = edits[rec.itemId];
+      if (!e) return rec;
+      rec.note.text = e.note.text || '';
+      if (typeof e.note.replacement === 'string') rec.note.replacement = e.note.replacement;
+      return rec;
+    }
+
     var threads = [];
     Object.keys(roots).forEach(function (id) {
       if (deleted[id]) return; // whole thread deleted
-      var root = roots[id];
+      var root = applyEdit(roots[id]);
       var reps = (replies[id] || [])
         .filter(function (r) { return !deleted[r.itemId]; })
+        .map(applyEdit)
         .sort(function (a, b) { return Date.parse(a.ts) - Date.parse(b.ts); });
       var status = statusEvents[id];
       threads.push({
@@ -1204,8 +1345,10 @@
       (th._orphan && !th.resolved) ? el('span', { class: 'hc-badge hc-badge-warn', text: 'original text not found' }) : null
     ]));
 
+    var editingRoot = EDITING && EDITING.id === root.itemId;
+
     // suggestion old -> new
-    if (th.kind === 'suggestion') {
+    if (th.kind === 'suggestion' && !editingRoot) {
       var oldT = (note.anchor && note.anchor.quote) || '';
       var newT = note.replacement || '';
       box.appendChild(el('div', { class: 'hc-sugdiff' }, [
@@ -1216,7 +1359,8 @@
       ]));
     }
 
-    if (note.text) box.appendChild(el('div', { class: 'hc-body', text: note.text }));
+    if (editingRoot) box.appendChild(editForm(root));
+    else if (note.text) box.appendChild(el('div', { class: 'hc-body', text: note.text }));
 
     // quote snippet
     var q = note.anchor && note.anchor.quote;
@@ -1227,14 +1371,19 @@
 
     // replies
     th.replies.forEach(function (rp) {
+      var editingReply = EDITING && EDITING.id === rp.itemId;
       var rbox = el('div', { class: 'hc-reply' }, [
         el('div', { class: 'hc-thread-head' }, [
           el('span', { class: 'hc-author', text: rp.voter || 'Anonymous' }),
           el('span', { class: 'hc-time', text: relTime(rp.ts) })
         ]),
-        el('div', { class: 'hc-body', text: rp.note.text || '' })
+        editingReply ? editForm(rp) : el('div', { class: 'hc-body', text: rp.note.text || '' })
       ]);
-      if (isOwn(rp)) rbox.appendChild(delBtn(th.id, rp.itemId));
+      if (isOwn(rp) && !editingReply) {
+        rbox.appendChild(el('div', { class: 'hc-actions' }, [
+          editBtn(rp, false), delBtn(th.id, rp.itemId)
+        ]));
+      }
       box.appendChild(rbox);
     });
 
@@ -1282,16 +1431,70 @@
         text: th.resolved ? 'Reopen' : 'Resolve',
         onclick: function () { submitStatus(th.id, th.resolved ? 'reopen' : 'resolve'); } })
     ]);
-    if (isOwn(root)) actions.appendChild(delBtn(th.id, th.id));
+    if (isOwn(root) && !editingRoot) {
+      actions.appendChild(editBtn(root, th.kind === 'suggestion'));
+      actions.appendChild(delBtn(th.id, th.id));
+    }
     box.appendChild(actions);
 
     // click thread -> scroll + flash highlight
     box.addEventListener('click', function (e) {
-      if (e.target.closest('button') || e.target.closest('input')) return;
+      if (e.target.closest('button, input, textarea, label')) return;
       focusThread(th.id, true);
     });
 
     return box;
+  }
+
+  // What is being edited, and what has been typed into the editor so far. Kept
+  // at module level because a background refresh rebuilds the whole sidebar,
+  // which would otherwise discard an edit in progress.
+  var EDITING = null; // { id, text, replacement } — replacement null unless a suggestion
+
+  function editBtn(rec, isSuggestion) {
+    return el('button', { class: 'hc-btn hc-btn-sm', text: 'Edit',
+      onclick: function () {
+        EDITING = { id: rec.itemId, text: rec.note.text || '',
+          replacement: isSuggestion ? (rec.note.replacement || '') : null };
+        renderSidebar();
+      } });
+  }
+
+  function editForm(rec) {
+    var frag = [];
+    if (EDITING.replacement !== null) {
+      var replArea = el('textarea', { class: 'hc-ta', rows: '3',
+        placeholder: 'Replacement text (empty = suggest deletion)' });
+      replArea.value = EDITING.replacement;
+      replArea.addEventListener('input', function () { EDITING.replacement = replArea.value; });
+      frag.push(el('label', { class: 'hc-lbl', text: 'Replacement text' }));
+      frag.push(replArea);
+      frag.push(el('label', { class: 'hc-lbl', text: 'Comment (optional)' }));
+    }
+    var textArea = el('textarea', { class: 'hc-ta', rows: '3', placeholder: 'Your comment…' });
+    textArea.value = EDITING.text;
+    textArea.addEventListener('input', function () { EDITING.text = textArea.value; });
+    frag.push(textArea);
+
+    function save() {
+      var text = EDITING.text.trim();
+      // A suggestion carries its point in the replacement, so its comment may be
+      // empty; a comment or reply with no text would render as a blank record.
+      if (EDITING.replacement === null && !text) { textArea.focus(); return; }
+      submitEdit(rec.itemId, text, EDITING.replacement);
+    }
+    frag.push(el('div', { class: 'hc-composer-btns' }, [
+      el('button', { class: 'hc-btn hc-btn-sm', text: 'Cancel',
+        onclick: function () { EDITING = null; renderSidebar(); } }),
+      el('button', { class: 'hc-btn hc-btn-sm hc-btn-primary', text: 'Save', onclick: save })
+    ]));
+
+    var form = el('div', { class: 'hc-edit-form' }, frag);
+    form.addEventListener('keydown', function (e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); save(); }
+    });
+    setTimeout(function () { textArea.focus(); }, 0);
+    return form;
   }
 
   function delBtn(threadId, targetId) {
@@ -1373,6 +1576,15 @@
     var itemId = genId();
     var note = { v: 2, parentId: threadId };
     record(itemId, vote, note);
+    renderAll();
+  }
+
+  function submitEdit(targetId, text, replacement) {
+    var itemId = genId();
+    var note = { v: 2, parentId: targetId, text: text };
+    if (replacement !== null) note.replacement = replacement;
+    EDITING = null;
+    record(itemId, 'edit', note);
     renderAll();
   }
 
@@ -1493,18 +1705,25 @@
       frag.push(textArea);
     }
 
-    var nameInput = el('input', { class: 'hc-name', type: 'text',
+    var nameInput = el('input', { class: 'hc-name' + (LOCAL ? ' hc-hidden' : ''),
+      type: 'text',
       placeholder: 'Your name (required)', required: 'required',
       'aria-required': 'true', autocomplete: 'name' });
     nameInput.value = getName();
     frag.push(nameInput);
 
+    var submitted = false;
+
     function doSubmit() {
+      // A double click, or Enter landing on an already-fired button, would
+      // otherwise post the same comment twice.
+      if (submitted) return;
       var voter = nameInput.value.trim();
       if (!voter) { nameInput.focus(); nameInput.classList.add('hc-invalid'); return; }
       var text = textArea.value.trim();
       var repl = replArea ? replArea.value : '';
       if (kind === 'comment' && !text) { textArea.focus(); return; }
+      submitted = true;
       submitComment(anchor, text, kind, repl, voter);
       clearComposer();
       window.getSelection().removeAllRanges();
@@ -1652,13 +1871,25 @@
     var box = readOutbox();
     if (!box.length) return;
     var have = {};
-    (rows || []).forEach(function (r) { if (r && r.itemId) have[r.itemId] = true; });
+    (rows || []).forEach(function (r) {
+      if (r && r.itemId) { have[r.itemId] = true; delete posting[r.itemId]; }
+    });
     var keep = box.filter(function (p) { return !(p && p.itemId && have[p.itemId]); });
     if (keep.length !== box.length) writeOutbox(keep);
   }
 
   // Debug hook: inspect internal state (harmless; aids testing).
+  if (LOCAL) {
+    if (document.body) mountExport();
+    else document.addEventListener('DOMContentLoaded', mountExport);
+  }
+  window.__hcLocal = LOCAL ? { markdown: localMarkdown, log: localLog, clear: localClear } : null;
   window.__hcVersion = HC_VERSION;
+  // Test hook: drop every record and repaint, so one page can run many cases.
+  window.__hcReset = function () {
+    ROWS.length = 0;
+    renderAll(true);
+  };
   window.__hcState = function () {
     return { version: HC_VERSION, rows: ROWS.length, threads: THREADS.length,
       savedSelection: !!savedSel, composer: !!UI.composer };

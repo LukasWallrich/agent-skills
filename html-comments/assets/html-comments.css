@@ -308,6 +308,9 @@ mark.hc-del {
 .hc-thread.hc-has-draft { box-shadow: inset 3px 0 0 var(--hc-accent); }
 
 .hc-actions { display: flex; gap: 6px; margin-top: 8px; }
+.hc-reply .hc-actions { margin-top: 6px; }
+.hc-edit-form { margin: 6px 0; }
+.hc-edit-form .hc-composer-btns { margin-top: 6px; }
 
 /* ---- Identity row ---- */
 .hc-who {
@@ -477,3 +480,6 @@ mark.hc-del {
   mark.hc-highlight, mark.hc-del { background: transparent !important; color: inherit !important; text-decoration: none !important; box-shadow: none !important; }
   .hc-ins { display: none !important; }
 }
+
+/* Local mode has one reviewer, seeded by name; the field is noise. */
+.hc-ui .hc-hidden { display: none; }

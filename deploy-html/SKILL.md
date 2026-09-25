@@ -1,6 +1,6 @@
 ---
 name: deploy-html
-description: Publish a standalone HTML document (report, plan, findings, mock) to a live public URL on surge.sh, normally with the html-comments review layer switched on. Use when the user wants a communication as HTML page deployed, published, put online, shared with reviewers, or given a link. Not used for a full website, or any HTML shipped for users.
+description: Publish a standalone HTML document (report, plan, findings, mock) to a live public URL on surge.sh, normally with the html-comments review layer switched on. Use only when the user asks for it to be deployed, published, put online, or given a link for OTHER people. Not for a throwaway / local / single-reviewer markup (that is html-comments local mode, no upload), not for a full website, and not for HTML shipped to users.
 ---
 
 # Deploy HTML — one command to a live, commentable URL

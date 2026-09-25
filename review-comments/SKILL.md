@@ -34,17 +34,21 @@ GET <endpoint>?action=rows&project=<slug>
 Use `curl -L` — Apps Script 302-redirects. Bursts get rate-limited (reads start 404ing for a
 while), so retry with backoff rather than hammering.
 
-Reduce before reporting: group by thread root (`parentId`), drop `delete`d records and
-threads whose last resolve/reopen row is `resolve`, unless asked to include resolved ones.
+Reduce before reporting: group by thread root (`parentId`), apply any `edit` rows, drop
+`delete`d records and threads whose last resolve/reopen row is `resolve`, unless asked to
+include resolved ones.
 
 ## Record format (sheet rows)
 
 Standard endpoint columns; `vote` holds the record type (`comment`, `suggestion`, `reply`,
-`resolve`, `reopen`, `delete`), `itemId` the record id, and `note` a JSON payload:
+`edit`, `resolve`, `reopen`, `delete`), `itemId` the record id, and `note` a JSON payload:
 `{v, cts, text, kind, replacement?, anchor:{…}, parentId?}`. Append-only event log; the
 **last** resolve/reopen row in server row order decides a thread's state; `delete` hides
-its target. `cts` is when the reviewer wrote the record, the row's `ts` when the server
-received it — they differ for anything written offline and queued, so order by `cts` when
+its target. An `edit` row rewrites the `text` (and, for a suggestion, the `replacement`)
+of the comment or reply named in its `parentId` — the last `edit` row in server order
+wins, and the anchor is never edited. Report the post-edit text, not the original. `cts` is
+when the reviewer wrote the record, the row's `ts` when the server received it — they differ
+for anything written offline and queued, so order by `cts` when
 reporting what a reviewer said.
 
 The anchor carries enough context to place even a one-word suggestion:
