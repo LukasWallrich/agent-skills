@@ -13,14 +13,30 @@ selection that crosses two paragraphs, and a save from the keyboard.
 
 import json
 import os
+from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INJECT = os.path.join(HERE, "bin", "local-comments.py")
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+def chrome_binary():
+    candidates = [os.environ.get("HC_TEST_CHROME"),
+                  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                  shutil.which("google-chrome"), shutil.which("chromium")]
+    candidates += [str(p) for p in sorted(
+        Path.home().glob(".cache/ms-playwright/chromium-*/chrome-linux*/chrome"),
+        reverse=True)]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    sys.exit("Chrome/Chromium not found; set HC_TEST_CHROME to its executable")
+
+
+CHROME = chrome_binary()
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Fixture</title>
 </head><body>
