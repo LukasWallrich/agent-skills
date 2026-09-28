@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "metacheck-skill/finding.schema.json",
+  "title": "metacheck agent finding",
+  "description": "One adjudicated finding. findings/<module>.json is an array of these. Verdict, severity and coverage are separate; none of them is a traffic light.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "finding_id",
+    "module",
+    "item_id",
+    "deterministic",
+    "agent",
+    "coverage",
+    "severity",
+    "advice"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "finding_id": {
+      "type": "string",
+      "description": "<paper_id>:<module>:<item_id>:c<n>, or <paper_id>:<module>:sweep:<item_id> for recall-sweep findings",
+      "pattern": "^.+:[A-Za-z0-9_]+:((t|b|r)[0-9]+(\\.[0-9]+)?:c[0-9]+|sweep:.+)$"
+    },
+    "module": {
+      "type": "string",
+      "minLength": 1
+    },
+    "item_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "study_id": {
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ]
+    },
+    "sweep": {
+      "type": "boolean",
+      "description": "true for recall-sweep findings with no deterministic candidate"
+    },
+    "deterministic": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "value"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {}
+      }
+    },
+    "agent": {
+      "type": "object",
+      "required": [
+        "verdict",
+        "rationale",
+        "evidence",
+        "confidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "verdict": {
+          "enum": [
+            "confirmed_issue",
+            "not_an_issue",
+            "insufficient_evidence",
+            "not_checked",
+            "not_applicable"
+          ]
+        },
+        "classification": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "source_id",
+              "location",
+              "quote"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "source_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text_id": {
+                "type": [
+                  "integer",
+                  "string"
+                ],
+                "pattern": "^t?[0-9]+$",
+                "description": "required when source_id is \"paper\""
+              },
+              "location": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "extracted": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Structured data the rubric asks the agent to extract (e.g. power-analysis fields, funders and grant IDs). Not verified by mc_validate.R; every value must be backed by a quote in evidence."
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "status",
+        "checked_source_ids",
+        "limitations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "complete",
+            "partial",
+            "not_performed"
+          ]
+        },
+        "checked_source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "searches": {
+          "type": "array",
+          "description": "for absence claims: what was searched, where, and how many hits",
+          "items": {
+            "type": "object",
+            "required": [
+              "query",
+              "scope",
+              "n_hits"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string",
+                "minLength": 1
+              },
+              "scope": {
+                "type": "string",
+                "minLength": 1
+              },
+              "n_hits": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "severity": {
+      "enum": [
+        "high",
+        "medium",
+        "low",
+        "none"
+      ]
+    },
+    "advice": {
+      "type": "string"
+    },
+    "suggested_rewording": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

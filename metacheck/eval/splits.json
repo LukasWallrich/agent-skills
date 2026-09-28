@@ -1,0 +1,5 @@
+{
+  "note": "Split is by PAPER. A paper never moves from heldout to dev once any heldout result has been looked at. synth_* are SYNTHETIC harness fixtures, not evaluation data.",
+  "dev": ["to_err_is_human", "synth_01", "synth_02", "synth_03", "synth_04"],
+  "heldout": ["synth_05"]
+}

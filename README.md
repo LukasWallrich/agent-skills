@@ -1,6 +1,6 @@
 # agent-skills
 
-Claude Code skills I use for research work. Vibe-coded, and they work for me — read the
+Agent skills I use for research work. Vibe-coded, and they work for me — read the
 code, expect sharp edges, and use at your own risk.
 
 Companion repo: [revealjs-tools](https://github.com/LukasWallrich/revealjs-tools) (skills for
@@ -12,16 +12,26 @@ Each directory is one skill. Clone the repo somewhere and symlink the skills you
 `~/.claude/skills/`:
 
 ```sh
-git clone https://github.com/LukasWallrich/agent-skills.git ~/Coding/agent-skills
-ln -s ~/Coding/agent-skills/html-comments  ~/.claude/skills/html-comments
-ln -s ~/Coding/agent-skills/download-paper ~/.claude/skills/download-paper
-ln -s ~/Coding/agent-skills/upload-public  ~/.claude/skills/upload-public
+git clone https://github.com/LukasWallrich/agent-skills.git ~/Documents/Coding/agent-skills
+ln -s ~/Documents/Coding/agent-skills/html-comments  ~/.claude/skills/html-comments
+ln -s ~/Documents/Coding/agent-skills/download-paper ~/.claude/skills/download-paper
+ln -s ~/Documents/Coding/agent-skills/upload-public  ~/.claude/skills/upload-public
+ln -s ~/Documents/Coding/agent-skills/metacheck     ~/.claude/skills/metacheck
 ```
 
 Symlinking rather than copying means one source of truth — a fix reaches every project at
 once instead of leaving stale vintages behind.
 
 ## Skills
+
+### `metacheck`
+
+Reviews a scientific manuscript with the `metacheck` R package, then has an agent
+adjudicate flagged items against the paper and linked evidence. It records quoted
+evidence, validates findings, and produces an HTML report. This is a pilot: agent
+judgements appear beside the package's original traffic lights and do not replace them.
+See [the skill README](metacheck/README.md) for requirements, installation for Codex,
+and the test commands.
 
 ### `html-comments`
 

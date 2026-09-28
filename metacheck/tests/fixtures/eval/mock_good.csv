@@ -1,0 +1,20 @@
+paper_id,text_id,verdict,quote,sweep,rationale
+to_err_is_human,3,not_an_issue,"use of ""marginally significant"" to describe non-significant findings",FALSE,Abstract lists the paper's demo content; no result is described.
+to_err_is_human,16,confirmed_issue,marginally significantly more useful,FALSE,Own result with p = 0.152 described as marginally significant.
+synth_01,2,not_an_issue,did not approach significance,FALSE,Negated.
+synth_01,3,not_an_issue,Estimated marginal means were significantly higher,FALSE,Marginal means; significant result.
+synth_01,4,not_an_issue,"The linear trend was significant, F(1, 118) = 12.40, p < .001",FALSE,Trend analysis.
+synth_01,5,confirmed_issue,"The interaction was marginally significant, F(1, 118) = 3.10, p = .08",FALSE,Own p = .08 interpreted as an effect.
+synth_02,1,not_an_issue,Smith and Jones (2015) reported,FALSE,Other authors' result.
+synth_02,2,not_an_issue,we therefore avoid this practice,FALSE,Terminology discussion.
+synth_02,3,not_an_issue,"approached significance (Lee, 2010)",FALSE,Other authors' result.
+synth_02,5,confirmed_issue,"close to significance, t(88) = 1.80, p = .075",FALSE,Own p = .075 taken as support.
+synth_02,6,confirmed_issue,borderline significant (p = .05),FALSE,Borderline wording.
+synth_03,1,confirmed_issue,fell just short of significance,TRUE,Sweep: unlisted phrasing for p = .06.
+synth_03,2,confirmed_issue,a hint of an effect,TRUE,Sweep: unlisted phrasing for p = .09.
+synth_03,3,confirmed_issue,"p = .07, demonstrating that rewards improve performance",TRUE,Sweep: p = .07 described as an effect.
+synth_03,5,confirmed_issue,a trend toward significance,FALSE,Own p = .06.
+synth_03,6,insufficient_evidence,,FALSE,Table 2 is not available.
+synth_04,2,confirmed_issue,almost statistically significant,FALSE,Own p = .06 interpreted as support.
+synth_04,3,not_an_issue,nowhere close to statistical significance,FALSE,Negated.
+synth_04,4,not_an_issue,Marginal significance is a contested concept,FALSE,Terminology discussion.

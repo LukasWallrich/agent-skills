@@ -1,0 +1,18 @@
+paper_id,text_id,verdict,quote,sweep,rationale
+to_err_is_human,3,confirmed_issue,"use of ""marginally significant"" to describe non-significant findings",FALSE,WRONG: takes the abstract's description as a result.
+to_err_is_human,16,confirmed_issue,marginally significantly more useful,FALSE,Own result with p = 0.152.
+synth_01,2,confirmed_issue,did not approach significance,FALSE,WRONG: misses the negation.
+synth_01,3,not_an_issue,Estimated marginal means were significantly higher,FALSE,Marginal means.
+synth_01,4,not_an_issue,The linear trend was significant,FALSE,Trend analysis.
+synth_01,5,confirmed_issue,The interaction was marginally significant,FALSE,Own p = .08.
+synth_02,1,confirmed_issue,Smith and Jones (2015) reported,FALSE,WRONG: other authors' result.
+synth_02,2,not_an_issue,we therefore avoid this practice,FALSE,Terminology.
+synth_02,3,insufficient_evidence,,FALSE,Abstains although decidable.
+synth_02,5,not_an_issue,close to significance,FALSE,WRONG: drops a true issue.
+synth_02,6,not_an_issue,borderline significant (p = .05),FALSE,Treats p = .05 as significant.
+synth_03,1,confirmed_issue,fell just short of significance,TRUE,Sweep hit.
+synth_03,4,confirmed_issue,The main effect of gender was not significant,TRUE,WRONG sweep: correctly reported non-significant result.
+synth_03,5,confirmed_issue,a trend towards significance,FALSE,INVALID QUOTE: the paper says 'toward'.
+synth_03,6,confirmed_issue,effects that were marginally significant,FALSE,WRONG: overclaims without Table 2.
+synth_04,2,confirmed_issue,almost statistically significant,FALSE,Own p = .06.
+synth_04,3,not_an_issue,nowhere close to statistical significance,FALSE,Negated.

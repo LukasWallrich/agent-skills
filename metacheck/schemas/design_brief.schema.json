@@ -1,0 +1,677 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "metacheck-skill/design_brief.schema.json",
+  "title": "metacheck design brief",
+  "description": "Written once by the agent after reading the paper; shared by all adjudication steps. Every field is {value, state, evidence}. Do not infer a paper-wide alpha or design: paper-level fields are only 'found' when stated for the whole paper, and are 'conflicting' when studies differ.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "paper_id",
+    "paper",
+    "studies"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "paper_id": {
+      "type": "string"
+    },
+    "paper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "n_studies",
+        "data",
+        "code",
+        "materials",
+        "preregistration"
+      ],
+      "properties": {
+        "n_studies": {
+          "description": "number of studies/experiments reported",
+          "allOf": [
+            {
+              "$ref": "#/$defs/field"
+            }
+          ],
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "description": "the conflicting values, when state is 'conflicting'"
+                }
+              ]
+            }
+          }
+        },
+        "alpha": {
+          "description": "only if stated once for the whole paper; 'conflicting' if studies differ",
+          "allOf": [
+            {
+              "$ref": "#/$defs/field"
+            }
+          ],
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "description": "the conflicting values, when state is 'conflicting'"
+                }
+              ]
+            }
+          }
+        },
+        "data": {
+          "description": "linked data",
+          "allOf": [
+            {
+              "$ref": "#/$defs/field"
+            }
+          ],
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "url"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "url": {
+                        "type": "string"
+                      },
+                      "source_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "array",
+                  "description": "the conflicting values, when state is 'conflicting'"
+                }
+              ]
+            }
+          }
+        },
+        "code": {
+          "description": "linked analysis code",
+          "allOf": [
+            {
+              "$ref": "#/$defs/field"
+            }
+          ],
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "url"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "url": {
+                        "type": "string"
+                      },
+                      "source_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "array",
+                  "description": "the conflicting values, when state is 'conflicting'"
+                }
+              ]
+            }
+          }
+        },
+        "materials": {
+          "description": "linked materials",
+          "allOf": [
+            {
+              "$ref": "#/$defs/field"
+            }
+          ],
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "url"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "url": {
+                        "type": "string"
+                      },
+                      "source_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "array",
+                  "description": "the conflicting values, when state is 'conflicting'"
+                }
+              ]
+            }
+          }
+        },
+        "preregistration": {
+          "description": "linked preregistrations",
+          "allOf": [
+            {
+              "$ref": "#/$defs/field"
+            }
+          ],
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "url"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "url": {
+                        "type": "string"
+                      },
+                      "source_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "array",
+                  "description": "the conflicting values, when state is 'conflicting'"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "studies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "study_id",
+          "label",
+          "design_type",
+          "randomised_variables",
+          "n_planned",
+          "n_analysed",
+          "alpha",
+          "sidedness",
+          "multiplicity_corrections"
+        ],
+        "properties": {
+          "study_id": {
+            "type": "string",
+            "description": "stable id used as study_id in findings, e.g. s1"
+          },
+          "label": {
+            "type": "string"
+          },
+          "text_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "text_id range(s) covering this study"
+          },
+          "analyses": {
+            "type": "array",
+            "description": "optional per-analysis overrides (e.g. a one-sided test within a two-sided study)",
+            "items": {
+              "type": "object",
+              "required": [
+                "analysis_id",
+                "label"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "analysis_id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "n_analysed": {
+                  "description": "sample size in the analyses, after exclusions",
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/field"
+                    }
+                  ],
+                  "properties": {
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        {
+                          "type": "array",
+                          "description": "the conflicting values, when state is 'conflicting'"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "alpha": {
+                  "description": "alpha level used in this study; never inherited from another study",
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/field"
+                    }
+                  ],
+                  "properties": {
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        {
+                          "type": "array",
+                          "description": "the conflicting values, when state is 'conflicting'"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "sidedness": {
+                  "description": "one-sided, two-sided or mixed",
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/field"
+                    }
+                  ],
+                  "properties": {
+                    "value": {
+                      "anyOf": [
+                        {
+                          "enum": [
+                            "one-sided",
+                            "two-sided",
+                            "mixed",
+                            null
+                          ]
+                        },
+                        {
+                          "type": "array",
+                          "description": "the conflicting values, when state is 'conflicting'"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "multiplicity_corrections": {
+                  "description": "corrections for multiple comparisons, e.g. Bonferroni, Holm, FDR; [] if explicitly none",
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/field"
+                    }
+                  ],
+                  "properties": {
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": [
+                            "array",
+                            "null"
+                          ],
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "type": "array",
+                          "description": "the conflicting values, when state is 'conflicting'"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "design_type": {
+            "description": "e.g. between-subjects experiment, within-subjects, mixed, correlational, longitudinal, meta-analysis",
+            "allOf": [
+              {
+                "$ref": "#/$defs/field"
+              }
+            ],
+            "properties": {
+              "value": {
+                "anyOf": [
+                  {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  {
+                    "type": "array",
+                    "description": "the conflicting values, when state is 'conflicting'"
+                  }
+                ]
+              }
+            }
+          },
+          "randomised_variables": {
+            "description": "variables participants/units were randomly assigned to; [] if explicitly none",
+            "allOf": [
+              {
+                "$ref": "#/$defs/field"
+              }
+            ],
+            "properties": {
+              "value": {
+                "anyOf": [
+                  {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "type": "array",
+                    "description": "the conflicting values, when state is 'conflicting'"
+                  }
+                ]
+              }
+            }
+          },
+          "n_planned": {
+            "description": "planned sample size (from power analysis / preregistration)",
+            "allOf": [
+              {
+                "$ref": "#/$defs/field"
+              }
+            ],
+            "properties": {
+              "value": {
+                "anyOf": [
+                  {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  {
+                    "type": "array",
+                    "description": "the conflicting values, when state is 'conflicting'"
+                  }
+                ]
+              }
+            }
+          },
+          "n_analysed": {
+            "description": "sample size in the analyses, after exclusions",
+            "allOf": [
+              {
+                "$ref": "#/$defs/field"
+              }
+            ],
+            "properties": {
+              "value": {
+                "anyOf": [
+                  {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  {
+                    "type": "array",
+                    "description": "the conflicting values, when state is 'conflicting'"
+                  }
+                ]
+              }
+            }
+          },
+          "alpha": {
+            "description": "alpha level used in this study; never inherited from another study",
+            "allOf": [
+              {
+                "$ref": "#/$defs/field"
+              }
+            ],
+            "properties": {
+              "value": {
+                "anyOf": [
+                  {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  {
+                    "type": "array",
+                    "description": "the conflicting values, when state is 'conflicting'"
+                  }
+                ]
+              }
+            }
+          },
+          "sidedness": {
+            "description": "one-sided, two-sided or mixed",
+            "allOf": [
+              {
+                "$ref": "#/$defs/field"
+              }
+            ],
+            "properties": {
+              "value": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "one-sided",
+                      "two-sided",
+                      "mixed",
+                      null
+                    ]
+                  },
+                  {
+                    "type": "array",
+                    "description": "the conflicting values, when state is 'conflicting'"
+                  }
+                ]
+              }
+            }
+          },
+          "multiplicity_corrections": {
+            "description": "corrections for multiple comparisons, e.g. Bonferroni, Holm, FDR; [] if explicitly none",
+            "allOf": [
+              {
+                "$ref": "#/$defs/field"
+              }
+            ],
+            "properties": {
+              "value": {
+                "anyOf": [
+                  {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "type": "array",
+                    "description": "the conflicting values, when state is 'conflicting'"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "field": {
+      "type": "object",
+      "required": [
+        "value",
+        "state",
+        "evidence"
+      ],
+      "properties": {
+        "value": {},
+        "state": {
+          "enum": [
+            "found",
+            "unknown",
+            "conflicting"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "found",
+                  "conflicting"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "text_id",
+        "quote"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text_id": {
+          "type": "integer"
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

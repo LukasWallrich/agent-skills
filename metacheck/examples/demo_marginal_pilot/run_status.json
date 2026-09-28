@@ -1,0 +1,39 @@
+{
+  "status": "ok",
+  "paper_id": "to_err_is_human",
+  "run_at": "2026-09-19T18:11:28Z",
+  "online": true,
+  "requested": ["marginal", "all_p_values"],
+  "order": ["marginal", "all_p_values"],
+  "auto_added": [],
+  "counts": {
+    "ok": 2,
+    "failed": 0,
+    "skipped_upstream_failed": 0,
+    "skipped_missing_input": 0
+  },
+  "modules": [
+    {
+      "module": "marginal",
+      "status": "ok",
+      "reused": false,
+      "requested": true,
+      "elapsed_s": 0.09,
+      "traffic_light": "red",
+      "n_rows": 2,
+      "error": null,
+      "n_warnings": 0
+    },
+    {
+      "module": "all_p_values",
+      "status": "ok",
+      "reused": false,
+      "requested": true,
+      "elapsed_s": 0.15,
+      "traffic_light": "info",
+      "n_rows": 3,
+      "error": null,
+      "n_warnings": 0
+    }
+  ]
+}

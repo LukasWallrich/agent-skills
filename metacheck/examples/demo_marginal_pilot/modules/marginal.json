@@ -1,0 +1,52 @@
+{
+  "schema_version": "1",
+  "module": "marginal",
+  "title": "Marginal Significance",
+  "section": "results",
+  "args": {},
+  "status": "ok",
+  "error": null,
+  "upstream": [],
+  "elapsed_s": 0.09,
+  "traffic_light": "red",
+  "summary_text": "You described 2 effects with terms related to 'marginally significant'.",
+  "report": ["You described effects with terms related to 'marginally significant'. If *p* values above 0.05 are interpreted as an effect, you inflate the alpha level, and increase the Type 1 error rate. If a *p* value is higher than the prespecified alpha level, it should be interpreted as a non-significant result.", "\n```{r}\n#| echo: false\n\n\n# table data --------------------------------------\ntable <- structure(list(Text = c(\"The paper shows examples of (1) open and closed OSF links; (2a) citation of retracted papers, (2b) citations without a doi, (2c) citations with Pubpeer comments, (2d) citations in the FLoRA replication database, and (2e) missing/mismatched/incorrect citations and references; (3a) R files with code on GitHub that do not load libraries in one location, (3b) load files that are not shared in the repository, (3c) lack comments, and (3d) have absolute file paths; (4) imprecise reporting of non-significant p-values; (5) tests with and without effect sizes; (6) use of \\\"marginally significant\\\" to describe non-significant findings; (7) a power analysis reporting some of the essential attributes; and (8) retrieving information from preregistrations.\", \n\"On average researchers in the experimental condition found the app marginally significantly more useful (M = 5.06) than researchers in the control condition found the checklist (M = 4.5), t(97.2) = -1.96, p =0.152.\"\n), \"Section Header\" = c(\"Abstract\", \"Procedure\")), row.names = c(NA, \n-2L), class = c(\"tbl_df\", \"tbl\", \"data.frame\"))\n\n# display table -----------------------------------\nmetacheck::report_table(table, \"auto\", 2, FALSE)\n```\n", "::: {.callout-tip title=\"Learn More\" collapse=\"true\"}\n\nFor metascientific articles demonstrating the rate at which non-significant p-values are interpreted as marginally significant, see:\n\nOlsson-Collentine, A., van Assen, M. MAL, Hartgerink &amp;, J. CH (2019). &ldquo;The Prevalence of Marginally Significant Results in Psychology Over Time.&rdquo; <em>Psychological Science<\/em>, <b>30<\/b>, 576&ndash;586. <a href=\"https://doi.org/10.1177/0956797619830326\">doi:10.1177/0956797619830326<\/a>.\n\nFor the list of terms used to identifify marginally significant results, see this [blog post by Matthew Hankins](https://web.archive.org/web/20251001114321/https://mchankins.wordpress.com/2013/04/21/still-not-significant-2/).\n\n:::\n"],
+  "summary_table": [
+    {
+      "paper_id": "to_err_is_human",
+      "marginal": 2
+    }
+  ],
+  "table": [
+    {
+      "candidate_id": "to_err_is_human:marginal:t3",
+      "item_id": "t3",
+      "text": "The paper shows examples of (1) open and closed OSF links; (2a) citation of retracted papers, (2b) citations without a doi, (2c) citations with Pubpeer comments, (2d) citations in the FLoRA replication database, and (2e) missing/mismatched/incorrect citations and references; (3a) R files with code on GitHub that do not load libraries in one location, (3b) load files that are not shared in the repository, (3c) lack comments, and (3d) have absolute file paths; (4) imprecise reporting of non-significant p-values; (5) tests with and without effect sizes; (6) use of \"marginally significant\" to describe non-significant findings; (7) a power analysis reporting some of the essential attributes; and (8) retrieving information from preregistrations.",
+      "text_id": 3,
+      "paragraph_id": 1,
+      "section_id": 0,
+      "page_number": null,
+      "formatted": null,
+      "paper_id": "to_err_is_human",
+      "header": "Abstract",
+      "section_type": "abstract"
+    },
+    {
+      "candidate_id": "to_err_is_human:marginal:t16",
+      "item_id": "t16",
+      "text": "On average researchers in the experimental condition found the app marginally significantly more useful (M = 5.06) than researchers in the control condition found the checklist (M = 4.5), t(97.2) = -1.96, p =0.152.",
+      "text_id": 16,
+      "paragraph_id": 5,
+      "section_id": 3,
+      "page_number": null,
+      "formatted": null,
+      "paper_id": "to_err_is_human",
+      "header": "Procedure",
+      "section_type": "method"
+    }
+  ],
+  "warnings": [],
+  "requested": true,
+  "reused": false,
+  "run_at": "2026-09-19T18:11:28Z"
+}

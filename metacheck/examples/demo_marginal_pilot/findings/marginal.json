@@ -1,0 +1,22 @@
+[
+ {"schema_version":"1","finding_id":"to_err_is_human:marginal:t16:c1","module":"marginal","item_id":"t16","study_id":null,
+  "deterministic":{"source_id":"module:marginal","value":"marginally significantly"},
+  "agent":{"verdict":"confirmed_issue","classification":"own_result_interpreted_as_effect",
+   "rationale":"The authors' own comparison of usefulness ratings has a reported p above .05 (no alpha is stated in the paper, so .05 is assumed), yet it is labelled marginally significant and described directionally as the app being more useful. A search for 'useful' found no restatement in the Abstract or Discussion.",
+   "evidence":[{"source_id":"paper","text_id":16,"location":"Procedure, paragraph 5","quote":"found the app marginally significantly more useful (M = 5.06)"},
+               {"source_id":"paper","text_id":16,"location":"Procedure, paragraph 5","quote":"t(97.2) = -1.96, p =0.152"}],
+   "confidence":"high"},
+  "coverage":{"status":"complete","checked_source_ids":["paper","module:marginal","module:all_p_values"],"limitations":[],
+   "searches":[{"query":"useful|tend|hint|trend|short of","scope":"whole paper","n_hits":6}]},
+  "severity":"medium",
+  "advice":"The usefulness comparison (p =0.152) is above the conventional .05; no alpha is stated. It is worth describing it as non-significant and removing the directional 'more useful' wording.",
+  "suggested_rewording":"Usefulness ratings did not differ significantly between the experimental (M = 5.06) and control (M = 4.5) conditions, t(97.2) = -1.96, p =0.152."},
+ {"schema_version":"1","finding_id":"to_err_is_human:marginal:t3:c1","module":"marginal","item_id":"t3","study_id":null,
+  "deterministic":{"source_id":"module:marginal","value":"marginally significant"},
+  "agent":{"verdict":"not_an_issue","classification":"terminology_or_policy",
+   "rationale":"The Abstract lists the practices the paper illustrates, including the use of the term; it does not describe a result.",
+   "evidence":[{"source_id":"paper","text_id":3,"location":"Abstract","quote":"(6) use of \"marginally significant\" to describe non-significant findings"}],
+   "confidence":"high"},
+  "coverage":{"status":"complete","checked_source_ids":["paper"],"limitations":[]},
+  "severity":"none","advice":""}
+]

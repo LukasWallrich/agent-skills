@@ -1,0 +1,42 @@
+{
+  "mapping_version": "1",
+  "description": "Deterministic mapping from (module status, validated findings) to an adjudicated light. Pilot: displayed as 'shadow light' only; original module lights are never replaced. Rules are evaluated in order; the first whose 'when' holds decides. Interpreted by mc_shadow_light() in scripts/_validate.R.",
+  "lights": ["red", "yellow", "green", "info", "na", "fail"],
+  "unadjudicated": { "verdict": "not_checked", "severity": "none", "coverage": "not_performed" },
+  "adjudication_exempt": ["all_p_values", "all_urls"],
+  "when_vocabulary": {
+    "module_status_not": "module status differs from this value",
+    "n_findings": "number of valid findings plus unadjudicated candidates equals this value",
+    "any": "at least one finding matches one of the listed matchers",
+    "all": "every finding matches one of the listed matchers (and there is at least one)",
+    "matcher": "object with optional verdict / severity / coverage arrays; all given keys must match"
+  },
+  "light_vocabulary": {
+    "string": "that light",
+    "inherit_original": "the original module light, unless it is listed in 'never', in which case 'fallback'"
+  },
+  "rules": [
+    { "id": "module_not_ok",
+      "why": "A failed or skipped module is 'could not check', never a clean result.",
+      "when": { "module_status_not": "ok" }, "light": "fail" },
+    { "id": "confirmed_high",
+      "why": "Confirmed issues stay visible even under partial coverage.",
+      "when": { "any": [ { "verdict": ["confirmed_issue"], "severity": ["high"] } ] }, "light": "red" },
+    { "id": "confirmed_other",
+      "when": { "any": [ { "verdict": ["confirmed_issue"] } ] }, "light": "yellow" },
+    { "id": "incomplete",
+      "why": "Unresolved, unchecked or partially covered items can never become green; the original light stands unless it was green.",
+      "when": { "any": [ { "verdict": ["insufficient_evidence", "not_checked"] },
+                         { "coverage": ["partial", "not_performed"] } ] },
+      "light": { "inherit_original": true, "never": ["green"], "fallback": "info" } },
+    { "id": "nothing_to_adjudicate",
+      "why": "No candidates and no sweep findings: the agent added nothing, so the original light stands.",
+      "when": { "n_findings": 0 }, "light": { "inherit_original": true, "never": [], "fallback": "info" } },
+    { "id": "all_not_applicable",
+      "when": { "all": [ { "verdict": ["not_applicable"], "coverage": ["complete"] } ] }, "light": "na" },
+    { "id": "all_clear",
+      "why": "Every candidate adjudicated as not an issue (or not applicable) with complete coverage.",
+      "when": { "all": [ { "verdict": ["not_an_issue", "not_applicable"], "coverage": ["complete"] } ] }, "light": "green" }
+  ],
+  "default": { "id": "default", "light": "info" }
+}

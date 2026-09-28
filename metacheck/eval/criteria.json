@@ -1,0 +1,23 @@
+{
+  "version": "0.1",
+  "status": "proposed, to be confirmed by maintainers",
+  "defined": "2026-09-19, before any agent results existed",
+  "note": "Aggregation over repeated runs is worst-case: min for >= criteria, max for <= criteria. A metric that cannot be computed is NOT_EVALUATED, which is not a pass.",
+  "modules": {
+    "marginal": {
+      "module_baseline": { "precision": 0.63, "false_negative_rate": 0.42, "source": "metacheck inst/modules/marginal.R <validation> note: 51 papers, 87 statements (extraction task)" },
+      "criteria": [
+        { "id": "final_precision", "metric": "final.precision", "op": ">=", "value": 0.85, "why": "module baseline PPV is .63" },
+        { "id": "recall_loss", "metric": "final.recall_loss", "op": "<=", "value": 0.05, "why": "adjudication may drop at most 5 percentage points of the true issues the generator found (candidate recall minus final recall; sweep gains offset losses)" },
+        { "id": "abstention_rate", "metric": "final.abstention_rate", "op": "<=", "value": 0.15, "why": "insufficient_evidence / not_checked / no finding, over candidates whose label is decidable" },
+        { "id": "coverage_rate", "metric": "final.coverage_rate", "op": ">=", "value": 0.95, "why": "candidates that received a valid verdict other than not_checked" },
+        { "id": "invalid_quotes", "metric": "quotes.n_invalid_quotes", "op": "<=", "value": 0, "why": "every quote must verify" },
+        { "id": "overclaims_on_unavailable", "metric": "unavailable_evidence.n_confirmed_issue", "op": "<=", "value": 0, "why": "no confirmed_issue where labellers judged the evidence unavailable" },
+        { "id": "run_agreement", "metric": "agreement.pairwise_agreement", "op": ">=", "value": 0.90, "min_runs": 3 },
+        { "id": "run_kappa", "metric": "agreement.fleiss_kappa", "op": ">=", "value": 0.80, "min_runs": 3 },
+        { "id": "n_papers", "metric": "data.n_papers", "op": ">=", "value": 20, "why": "minimum held-out sample" },
+        { "id": "n_true_issues", "metric": "data.n_confirmed_issue", "op": ">=", "value": 30, "why": "minimum held-out positives, so precision/recall are not decided by a handful of items" }
+      ]
+    }
+  }
+}

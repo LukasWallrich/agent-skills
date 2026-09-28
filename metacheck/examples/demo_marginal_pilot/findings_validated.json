@@ -1,0 +1,70 @@
+{
+  "status": "ok",
+  "run_dir": "/tmp/mc_pilot",
+  "validated_at": "2026-09-19T18:11:59Z",
+  "validator": "builtin",
+  "schema_version": "1",
+  "mapping_version": "1",
+  "n_findings": 2,
+  "n_invalid": 0,
+  "n_unadjudicated": 0,
+  "note": "Validation checks structure, ids and that quotes exist verbatim in the cited source. It does NOT check that the evidence supports the verdict; quote existence does not validate the interpretation. Shadow lights are displayed next to the original module lights and never replace them. Invalid findings are excluded from lights and the report; their candidates count as unadjudicated (not_checked).",
+  "modules": [
+    {
+      "module": "all_p_values",
+      "status": "ok",
+      "n_candidates": 3,
+      "n_findings": 0,
+      "n_valid": 0,
+      "n_invalid": 0,
+      "file_error": null,
+      "verdicts": {
+        "confirmed_issue": 0,
+        "not_an_issue": 0,
+        "insufficient_evidence": 0,
+        "not_checked": 0,
+        "not_applicable": 0
+      },
+      "unadjudicated": [],
+      "original_light": "info",
+      "shadow_light": "info",
+      "shadow_rule": "nothing_to_adjudicate",
+      "mapping_version": "1"
+    },
+    {
+      "module": "marginal",
+      "status": "ok",
+      "n_candidates": 2,
+      "n_findings": 2,
+      "n_valid": 2,
+      "n_invalid": 0,
+      "file_error": null,
+      "verdicts": {
+        "confirmed_issue": 1,
+        "not_an_issue": 1,
+        "insufficient_evidence": 0,
+        "not_checked": 0,
+        "not_applicable": 0
+      },
+      "unadjudicated": [],
+      "original_light": "red",
+      "shadow_light": "yellow",
+      "shadow_rule": "confirmed_other",
+      "mapping_version": "1"
+    }
+  ],
+  "findings": [
+    {
+      "finding_id": "to_err_is_human:marginal:t16:c1",
+      "module": "marginal",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "finding_id": "to_err_is_human:marginal:t3:c1",
+      "module": "marginal",
+      "valid": true,
+      "errors": []
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "run_id": "to_err_is_human_20260919T181125Z",
+  "paper_id": "to_err_is_human",
+  "source": {
+    "path": "/home/lukas/metacheck/inst/demos/to_err_is_human.json",
+    "sha256": "c99be5ea276910a6e7fbd0301ee0b89e0ccc7c7af5d27727e018d573dc646da4",
+    "demo": true,
+    "converted_json": null
+  },
+  "metacheck": {
+    "version": "0.1.0",
+    "commit": "7bd42506d38270dab281713fc5f9fae1191dda35",
+    "dev_path": "/home/lukas/metacheck"
+  },
+  "r_version": "R version 4.5.3 (2026-03-11)",
+  "databases": {
+    "retractionwatch": "2026-06-05",
+    "FLoRA": "2026-05-14"
+  },
+  "schema_versions": {
+    "manifest": "1",
+    "module_result": "1",
+    "finding": "1"
+  },
+  "created_at": "2026-09-19T18:11:25Z",
+  "last_module_run_at": "2026-09-19T18:11:28Z",
+  "light_mapping_version": "1",
+  "validated_at": "2026-09-19T18:11:59Z",
+  "reported_at": "2026-09-19T18:11:59Z"
+}

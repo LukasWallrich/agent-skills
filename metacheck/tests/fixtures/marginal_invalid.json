@@ -1,0 +1,29 @@
+[
+  {
+    "schema_version": "1",
+    "finding_id": "to_err_is_human:marginal:t16:c1",
+    "module": "marginal", "item_id": "t16", "study_id": null,
+    "deterministic": { "source_id": "module:marginal", "value": "marginally significantly" },
+    "agent": {
+      "verdict": "confirmed_issue",
+      "rationale": "Fabricated quote.",
+      "evidence": [
+        { "source_id": "paper", "text_id": 16, "location": "Procedure",
+          "quote": "the app was marginally significantly better, p = .06" }
+      ],
+      "confidence": "high"
+    },
+    "coverage": { "status": "complete", "checked_source_ids": ["paper"], "limitations": [] },
+    "severity": "medium",
+    "advice": "Worth checking."
+  },
+  {
+    "schema_version": "1",
+    "finding_id": "to_err_is_human:marginal:t99:c1",
+    "module": "marginal", "item_id": "t99",
+    "deterministic": { "source_id": "retraction_watch", "value": null },
+    "agent": { "verdict": "maybe", "rationale": "x", "evidence": [], "confidence": "high" },
+    "coverage": { "status": "complete", "checked_source_ids": [], "limitations": [] },
+    "severity": "none", "advice": ""
+  }
+]

@@ -1,0 +1,71 @@
+{
+  "schema_version": "1",
+  "module": "all_p_values",
+  "title": "List All P-Values",
+  "section": "results",
+  "args": {},
+  "status": "ok",
+  "error": null,
+  "upstream": [],
+  "elapsed_s": 0.15,
+  "traffic_light": "info",
+  "summary_text": "We found 3 p-values",
+  "report": ["\n```{r}\n#| echo: false\n\n\n# table data --------------------------------------\ntable <- structure(list(Text = c(\"p = 0.005\", \"p =0.152\", \"p > .05\"), \n    Sentence = c(\"On average researchers in the experimental (app) condition made fewer mistakes (M = 9.12) than researchers in the control (checklist) condition (M = 10.9), t(97.7) = 2.9, p = 0.005, d =0.59.\", \n    \"On average researchers in the experimental condition found the app marginally significantly more useful (M = 5.06) than researchers in the control condition found the checklist (M = 4.5), t(97.2) = -1.96, p =0.152.\", \n    \"There was no effect of experience on the reduction in errors when using the tool (p > .05), as the correlation was non-significant (Figure 2).\"\n    )), row.names = c(NA, -3L), class = c(\"tbl_df\", \"tbl\", \"data.frame\"\n))\n\n# display table -----------------------------------\nmetacheck::report_table(table, c(\"5em\", NA), 2, FALSE)\n```\n", "This will catch most comparators like =<>~≈≠≤≥≪≫ and most versions of scientific notation like 5.0 x 10^-2 or 5.0e-2. If you find any formats that are not correctly handled by this function, please contact debruine@gmail.com."],
+  "summary_table": [
+    {
+      "paper_id": "to_err_is_human",
+      "p_values": 3
+    }
+  ],
+  "table": [
+    {
+      "candidate_id": "to_err_is_human:all_p_values:t15",
+      "item_id": "t15",
+      "text": "p = 0.005",
+      "text_id": 15,
+      "paragraph_id": 4,
+      "section_id": 3,
+      "page_number": null,
+      "formatted": null,
+      "paper_id": "to_err_is_human",
+      "header": "Procedure",
+      "section_type": "method",
+      "p_comp": "=",
+      "p_value": 0.005
+    },
+    {
+      "candidate_id": "to_err_is_human:all_p_values:t16",
+      "item_id": "t16",
+      "text": "p =0.152",
+      "text_id": 16,
+      "paragraph_id": 5,
+      "section_id": 3,
+      "page_number": null,
+      "formatted": null,
+      "paper_id": "to_err_is_human",
+      "header": "Procedure",
+      "section_type": "method",
+      "p_comp": "=",
+      "p_value": 0.152
+    },
+    {
+      "candidate_id": "to_err_is_human:all_p_values:t17",
+      "item_id": "t17",
+      "text": "p > .05",
+      "text_id": 17,
+      "paragraph_id": 6,
+      "section_id": 3,
+      "page_number": null,
+      "formatted": "There was no effect of experience on the reduction in errors when using the tool (p &gt; .05), as the correlation was non-significant (Figure <ref type=\"figure\" target=\"#fig_0\">2<\/ref>).",
+      "paper_id": "to_err_is_human",
+      "header": "Procedure",
+      "section_type": "method",
+      "p_comp": ">",
+      "p_value": 0.05
+    }
+  ],
+  "warnings": [],
+  "requested": true,
+  "reused": false,
+  "run_at": "2026-09-19T18:11:28Z"
+}

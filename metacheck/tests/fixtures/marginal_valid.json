@@ -1,0 +1,44 @@
+[
+  {
+    "schema_version": "1",
+    "finding_id": "to_err_is_human:marginal:t16:c1",
+    "module": "marginal", "item_id": "t16", "study_id": null,
+    "deterministic": { "source_id": "module:marginal", "value": "marginally significantly" },
+    "agent": {
+      "verdict": "confirmed_issue",
+      "classification": "nonsignificant_result_described_as_effect",
+      "rationale": "The sentence describes a difference as 'marginally significantly more useful' while the reported p value is above .05 and no other alpha level is stated.",
+      "evidence": [
+        { "source_id": "paper", "text_id": 16, "location": "Procedure, paragraph 5",
+          "quote": "found the app marginally significantly more useful (M = 5.06)" },
+        { "source_id": "paper", "text_id": "t16", "location": "Procedure, paragraph 5", "quote": "p =0.152" }
+      ],
+      "confidence": "high"
+    },
+    "coverage": { "status": "complete", "checked_source_ids": ["paper", "module:marginal"], "limitations": [] },
+    "severity": "medium",
+    "advice": "It may be worth checking whether this result should be described as non-significant.",
+    "suggested_rewording": "Researchers in the experimental condition did not rate the app as significantly more useful than ..."
+  },
+  {
+    "schema_version": "1",
+    "finding_id": "to_err_is_human:marginal:t3:c1",
+    "module": "marginal", "item_id": "t3", "study_id": null,
+    "deterministic": { "source_id": "module:marginal", "value": "marginally significant" },
+    "agent": {
+      "verdict": "not_an_issue",
+      "classification": "mention_not_use",
+      "rationale": "The abstract lists the use of the phrase as one of the practices the paper demonstrates; it does not describe a result.",
+      "evidence": [
+        { "source_id": "paper", "text_id": 3, "location": "Abstract",
+          "quote": "(6) use of “marginally significant” to describe  non-significant findings" },
+        { "source_id": "paper", "text_id": 3, "location": "Abstract (spans two sentences)",
+          "quote": "All data are simulated. The paper shows examples of" }
+      ],
+      "confidence": "high"
+    },
+    "coverage": { "status": "complete", "checked_source_ids": ["paper"], "limitations": [] },
+    "severity": "none",
+    "advice": ""
+  }
+]

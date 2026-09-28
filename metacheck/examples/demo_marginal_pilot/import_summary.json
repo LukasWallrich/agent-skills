@@ -1,0 +1,150 @@
+{
+  "status": "ok",
+  "paper_id": "to_err_is_human",
+  "title": "To Err is Human: An Empirical Investigation",
+  "doi": "10.32614/10.5281/zenodo.2669586",
+  "input_format": "grobid 0.9.0",
+  "counts": {
+    "sentences": 37,
+    "paragraphs": 23,
+    "sections": 14,
+    "refs": 5,
+    "xrefs": 5,
+    "xrefs_bibr": 1,
+    "bib_matches": 3,
+    "urls": 6,
+    "tables": 1,
+    "figures": 2,
+    "equations": 13,
+    "authors": 3
+  },
+  "sections": [
+    {
+      "section_id": 0,
+      "header": "Abstract",
+      "section_type": "abstract",
+      "parent_section_id": null,
+      "n_sentences": 3,
+      "text_id_min": 1,
+      "text_id_max": 3
+    },
+    {
+      "section_id": 1,
+      "header": "[div-01]",
+      "section_type": "intro",
+      "parent_section_id": null,
+      "n_sentences": 4,
+      "text_id_min": 4,
+      "text_id_max": 7
+    },
+    {
+      "section_id": 2,
+      "header": "Method",
+      "section_type": "method",
+      "parent_section_id": null,
+      "n_sentences": 2,
+      "text_id_min": 8,
+      "text_id_max": 9
+    },
+    {
+      "section_id": 3,
+      "header": "Procedure",
+      "section_type": "method",
+      "parent_section_id": null,
+      "n_sentences": 8,
+      "text_id_min": 10,
+      "text_id_max": 17
+    },
+    {
+      "section_id": 4,
+      "header": "Discussion",
+      "section_type": "discussion",
+      "parent_section_id": null,
+      "n_sentences": 2,
+      "text_id_min": 18,
+      "text_id_max": 19
+    },
+    {
+      "section_id": 5,
+      "header": "Data Availability",
+      "section_type": "availability",
+      "parent_section_id": null,
+      "n_sentences": 2,
+      "text_id_min": 20,
+      "text_id_max": 21
+    },
+    {
+      "section_id": 6,
+      "header": "Author Notes",
+      "section_type": "contribution",
+      "parent_section_id": null,
+      "n_sentences": 2,
+      "text_id_min": 22,
+      "text_id_max": 23
+    },
+    {
+      "section_id": 7,
+      "header": "Power Analysis",
+      "section_type": "annex",
+      "parent_section_id": null,
+      "n_sentences": 1,
+      "text_id_min": 24,
+      "text_id_max": 24
+    },
+    {
+      "section_id": 8,
+      "header": "Results",
+      "section_type": "annex",
+      "parent_section_id": null,
+      "n_sentences": 4,
+      "text_id_min": 25,
+      "text_id_max": 28
+    },
+    {
+      "section_id": 9,
+      "header": "Figure 2 :",
+      "section_type": "figure",
+      "parent_section_id": null,
+      "n_sentences": 1,
+      "text_id_min": 29,
+      "text_id_max": 29
+    },
+    {
+      "section_id": 10,
+      "header": "Table 1 :",
+      "section_type": "table",
+      "parent_section_id": null,
+      "n_sentences": 1,
+      "text_id_min": 30,
+      "text_id_max": 30
+    },
+    {
+      "section_id": 11,
+      "header": "Figure 1 :",
+      "section_type": "figure",
+      "parent_section_id": null,
+      "n_sentences": 1,
+      "text_id_min": 31,
+      "text_id_max": 31
+    },
+    {
+      "section_id": 12,
+      "header": "",
+      "section_type": "foot",
+      "parent_section_id": null,
+      "n_sentences": 1,
+      "text_id_min": 32,
+      "text_id_max": 32
+    },
+    {
+      "section_id": 13,
+      "header": "References",
+      "section_type": "references",
+      "parent_section_id": null,
+      "n_sentences": 5,
+      "text_id_min": 33,
+      "text_id_max": 37
+    }
+  ],
+  "parse_warnings": ["No results section detected (results may be classified under another section type; check --sections)", "Fewer in-text citations (1) than half the references (5); citation linking is probably incomplete"]
+}

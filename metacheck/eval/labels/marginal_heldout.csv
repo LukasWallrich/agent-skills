@@ -1,0 +1,5 @@
+"paper_id","module","text_id","text","fixture","synthetic","extraction_label","contextual_label","ambiguous","category","rationale","labeller"
+"synth_05","marginal",1,"The effect of feedback on persistence was marginally significant, t(62) = 1.75, p = .085.","inline",TRUE,"candidate","confirmed_issue",FALSE,"own_result","Own p = .085 called marginally significant.","claude-seed (unreviewed)"
+"synth_05","marginal",2,"Contrary to Brown (2018), whose effect bordered on significance, we observed a clear effect, t(62) = 3.40, p = .001.","inline",TRUE,"candidate","not_an_issue",FALSE,"other_authors","Near-significance refers to Brown (2018).","claude-seed (unreviewed)"
+"synth_05","marginal",3,"The pattern was suggestive of an advantage for bilinguals, t(62) = 1.80, p = .077, confirming Hypothesis 2.","inline",TRUE,"candidate","confirmed_issue",FALSE,"missed_phrasing","'suggestive of' for p = .077, treated as confirmation.","claude-seed (unreviewed)"
+"synth_05","marginal",4,"Data and code are available at the OSF.","inline",TRUE,"not_candidate","not_an_issue",FALSE,"true_negative","Filler.","claude-seed (unreviewed)"
