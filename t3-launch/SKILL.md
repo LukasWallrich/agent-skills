@@ -1,15 +1,15 @@
 ---
 name: t3-launch
-description: Add an existing local folder as a T3 Code project and launch a new prompt with a chosen model, using the running desktop app's local API instead of computer use. Use when the user asks to add projects or start chats in T3 Code.
+description: Add an existing local folder as a T3 Code project and launch a new prompt with a chosen model, using the running T3 server's local API instead of computer use. Use when the user asks to add projects or start chats in T3 Code.
 ---
 
 # T3 Code project and prompt launch
 
-Use `scripts/t3_launch.py` to control the running local desktop app. It uses the bundled CLI for a five-minute bearer session, revokes it afterwards, and sends supported orchestration commands over loopback HTTP. It does not modify the T3 database directly or need an additional server, browser, or package installation.
+Use `scripts/t3_launch.py` to control the running local desktop app or headless server. It uses the installed CLI for a five-minute bearer session, revokes it afterwards, and sends supported orchestration commands over loopback HTTP. It does not modify the T3 database directly or need an additional server, browser, or package installation.
 
-Verified on macOS with `/Applications/T3 Code (Alpha).app`. `--app` and `--home` override the app path and T3 data directory. The app must already be running. The endpoint comes from `<home>/userdata/server-runtime.json`; do not assume port 3773. Remote environments are outside this helper's scope.
+On macOS, the default CLI comes from `/Applications/T3 Code (Alpha).app`; `--app` overrides that bundle. On Linux, the helper finds `t3` on PATH or the running T3 service executable through `/proc`. Pass `--cli /absolute/path/to/t3` to select another installed CLI. `--home` overrides the T3 data directory. The desktop app or server must already be running. The endpoint comes from `<home>/userdata/server-runtime.json`; do not assume port 3773. Remote environments are outside this helper's scope.
 
-Resolve `<skill-root>` to the directory containing this `SKILL.md`, following symlinks if needed. The helper needs only Python 3 and the installed T3 app.
+Resolve `<skill-root>` to the directory containing this `SKILL.md`, following symlinks if needed. The helper needs only Python 3 and an installed T3 app or CLI. It controls the T3 server on the same machine: box-side paths refer to projects on the box, not on the Mac.
 
 ## Add or reuse a project
 
@@ -53,6 +53,6 @@ This reports model, latest turn, session status and the user-message count for t
 
 T3's API is internal and can change. On schema errors, inspect the installed app version and the corresponding `packages/contracts/src/{environmentHttp,orchestration}.ts` files in an available T3 source checkout. HTTP requires separate `thread.create` and `thread.turn.start` commands; the UI's bootstrap payload alone does not create a thread through HTTP. Model options are an array of `{id, value}` objects.
 
-Project CLI commands also exist (`t3 project add PATH`, `t3 app PATH`), but there is currently no bundled thread-launch CLI. The helper calls the installed app's CLI through `ELECTRON_RUN_AS_NODE=1`, avoiding downloads and version mismatch. Never print captured auth command output or retain bearer tokens in files.
+Project CLI commands also exist (`t3 project add PATH`, `t3 app PATH`), but there is currently no bundled thread-launch CLI. On macOS the helper calls the installed app's CLI through `ELECTRON_RUN_AS_NODE=1`; on Linux it calls the installed service executable. Both avoid downloads. Never print captured auth command output or retain bearer tokens in files.
 
 After a helper change, use an isolated scratch project and a no-tools echo prompt. Confirm the assistant response and verify that replay with the same receipt leaves only one user message. Remove only the scratch project/thread through orchestration commands after completion. Do not rerun the user's substantive task merely to test transport.

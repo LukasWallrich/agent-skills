@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -23,7 +24,7 @@ def now():
 
 
 class Client:
-    def __init__(self, home, app):
+    def __init__(self, home, app, cli=None):
         self.home = Path(home).expanduser().resolve()
         runtime = json.loads((self.home / 'userdata/server-runtime.json').read_text())
         self.origin = runtime['origin']
@@ -32,9 +33,23 @@ class Client:
             raise ValueError('Only the running local loopback server is supported.')
         os.kill(runtime['pid'], 0)
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        self.cli = [str(Path(app) / 'Contents/MacOS' / Path(app).stem),
-                    str(Path(app) / 'Contents/Resources/app.asar/apps/server/dist/bin.mjs')]
-        self.env = dict(os.environ, ELECTRON_RUN_AS_NODE='1')
+        self.env = dict(os.environ)
+        if cli:
+            self.cli = [str(Path(cli).expanduser().resolve(strict=True))]
+        elif sys.platform == 'darwin':
+            self.cli = [str(Path(app) / 'Contents/MacOS' / Path(app).stem),
+                        str(Path(app) / 'Contents/Resources/app.asar/apps/server/dist/bin.mjs')]
+            self.env['ELECTRON_RUN_AS_NODE'] = '1'
+        else:
+            installed = shutil.which('t3')
+            if not installed and sys.platform == 'linux':
+                # Packaged service installs may have no t3 launcher on PATH.
+                executable = Path(f"/proc/{runtime['pid']}/exe").resolve(strict=True)
+                if executable.name == 't3':
+                    installed = str(executable)
+            if not installed:
+                raise RuntimeError('No installed T3 CLI found; pass --cli /path/to/t3.')
+            self.cli = [installed]
         self.session = None
 
     def cli_run(self, args):
@@ -42,7 +57,7 @@ class Client:
                                 env=self.env, capture_output=True, text=True, timeout=25)
         if result.returncode:
             # CLI output may contain authentication values; do not forward it.
-            raise RuntimeError('Bundled T3 CLI failed; check app version and command support.')
+            raise RuntimeError('Installed T3 CLI failed; check version and command support.')
         return result.stdout
 
     def __enter__(self):
@@ -171,6 +186,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--home', default=os.environ.get('T3CODE_HOME', str(Path.home() / '.t3')))
     parser.add_argument('--app', default='/Applications/T3 Code (Alpha).app')
+    parser.add_argument('--cli', help='Installed T3 CLI executable (overrides app bundle)')
     subs = parser.add_subparsers(dest='action', required=True)
     inspect_parser = subs.add_parser('inspect', help='Read project metadata or one thread summary')
     inspect_parser.add_argument('--thread-id')
@@ -196,7 +212,7 @@ def main():
         if args.action == 'launch':
             if not Path(args.prompt_file).read_text().strip():
                 raise ValueError('Prompt file is empty.')
-    with Client(args.home, args.app) as client:
+    with Client(args.home, args.app, args.cli) as client:
         if args.action == 'inspect':
             if args.thread_id:
                 detail = client.thread(args.thread_id)

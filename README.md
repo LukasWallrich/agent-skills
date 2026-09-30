@@ -100,7 +100,7 @@ Adds an existing local folder as a T3 Code project and starts a new chat with a 
 model through the running desktop app’s local API. Supports Codex and Claude skill
 discovery, reuses projects by canonical path, verifies prompt acceptance, and uses a
 receipt to prevent duplicate prompts on retries. Requires Python 3 and a running
-macOS T3 Code desktop app. The API is internal and may change with T3 updates.
+T3 Code desktop app on macOS or local server on Linux. The API is internal and may change with T3 updates.
 
 Symlink `t3-launch` into `~/.claude/skills/` or `~/.codex/skills/`.
 
