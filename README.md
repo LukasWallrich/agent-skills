@@ -94,6 +94,16 @@ the bucket with `wrangler r2 bucket create <name>` and `wrangler r2 bucket dev-u
 <name>`, which prints the public base. R2's free tier is 10 GB with no egress charge. The
 bucket is public: anything uploaded is readable by anyone with the URL.
 
+### `t3-launch`
+
+Adds an existing local folder as a T3 Code project and starts a new chat with a chosen
+model through the running desktop app’s local API. Supports Codex and Claude skill
+discovery, reuses projects by canonical path, verifies prompt acceptance, and uses a
+receipt to prevent duplicate prompts on retries. Requires Python 3 and a running
+macOS T3 Code desktop app. The API is internal and may change with T3 updates.
+
+Symlink `t3-launch` into `~/.claude/skills/` or `~/.codex/skills/`.
+
 ## Licence
 
 MIT.

@@ -1,0 +1,3 @@
+interface:
+  display_name: "T3 Launch"
+  short_description: "Add T3 projects and launch prompts without UI automation"
