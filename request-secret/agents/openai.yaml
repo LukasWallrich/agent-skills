@@ -1,0 +1,3 @@
+interface:
+  display_name: "Request a secret"
+  short_description: "Private credential entry for T3, Codex and Claude"

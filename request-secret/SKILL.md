@@ -1,0 +1,107 @@
+---
+name: request-secret
+description: Request passwords, API keys or tokens through a private native dialog or localhost form and save them to an env file without putting their values in chat or tool output. Use when a task needs a missing credential, including Codex or Claude sessions in T3 Code.
+---
+
+# Request a secret
+
+Use `scripts/request_secret.py` (Python 3.10+, standard library only). The agent
+requests the credential in chat; the user enters it in a separate private UI.
+The helper receives and writes the value and returns only a receipt.
+
+Use the folder containing this file as `<skill-root>`; executing through an
+installed skill-directory symlink works without a separate resolution call.
+The helper has no default destination: `--file` is required. Choose the variable
+name and destination for the consuming service or project, honoring any explicit
+path and existing credential conventions. For Lukas's shared credentials, prefer
+the existing canonical credentials file; `$CODEX_HOME/.env` is a symlink, so
+resolve that file's destination without reading values. For project-only secrets,
+use its Git-ignored `.env.local` or a service/project-specific private config file
+outside Git. A generic request with no consumer can use a separate demonstration
+file outside Git; do not make that the default for real credentials.
+
+Use an absolute path with an existing parent directory. The helper refuses tracked
+or non-ignored repository files, file symlinks, and files owned by another user.
+
+Say which credential is needed, why, and where it will be saved, then launch:
+
+```sh
+python3 <skill-root>/scripts/request_secret.py request \
+  --file '/absolute/path/to/credentials.env' SERVICE_API_KEY
+```
+
+Launch directly with the ordinary shell tool after reading this skill. Routine
+entry does not need tool discovery, helper-source inspection, or a separate path
+inventory. If a private parent directory needs creating or the credential-file
+symlink needs resolving, combine that preparation and helper launch in one shell
+invocation. Use a short initial yield (about one second) so the dialog opens
+promptly and the request remains active; then wait on that same process for its
+receipt. Do not re-read this skill within the same conversation unless it changed.
+
+On a local Mac, this opens a native dialog with masked input and a Show/Hide
+button to check correctness. Show/Hide preserves the entered value and the request's
+original timeout. Elsewhere it opens a
+private browser form bound to `127.0.0.1`, and prints its temporary URL. Use
+`--ui browser` to choose the form explicitly; `--no-open` leaves opening the URL
+to the user. Multiple names collect all values before one atomic save. Existing
+entries with those names are replaced; other entries are preserved. Cancel or
+timeout saves nothing. The default timeout is ten minutes. Each browser input also
+has a Show/Hide button; revealing changes only local display, not transcript output.
+After a confirmed browser save, the page tries to close its tab. If browser policy
+blocks closing, it displays a saved confirmation and invites the user to close it.
+
+Keep the yielding shell process alive while the user enters the value. Poll using
+the runtime's process/session tool; do not end the turn with the request pending.
+Report only `saved`, variable names and the destination. On failure, act on the
+safe error; cancellation is not a reason to relaunch automatically.
+
+## Keep values out of the conversation
+
+- Never ask for a secret in a chat reply, `request_user_input`, `AskUserQuestion`,
+  or an MCP form response. Masked display alone does not prevent persistence.
+- Never pass values in tool arguments, shell commands, prompts, screenshots,
+  or attachments. Do not inspect, automate, record, snapshot, or read the private
+  form/dialog while real credentials are being entered. Let the user submit it.
+- Do not read the env file with agent tools, print it, or include it in context.
+  Use `list` for names and presence only:
+
+  ```sh
+  python3 <skill-root>/scripts/request_secret.py list --file '/absolute/path/to/credentials.env'
+  ```
+
+- To use the file, load it inside the consuming process. This helper provides a
+  literal env loader; it never sources or executes file contents:
+
+  ```sh
+  python3 <skill-root>/scripts/request_secret.py run \
+    --file '/absolute/path/to/credentials.env' -- python3 app.py
+  ```
+
+  Child stdout/stderr are suppressed by default; the receipt contains its exit
+  code. Add `--redact-output` before `--` only when output is needed and the command
+  is understood: it removes exact secret values across output chunk boundaries,
+  but cannot protect encoded, transformed or partial disclosures. Avoid verbose
+  HTTP/auth logging and passing credentials as command-line arguments.
+
+## T3 Code and remote hosts
+
+This works through the ordinary shell tool in both Codex and Claude; no T3 fork,
+MCP registration, provider API key, or paid service is needed. T3's normal question
+cards are not a private credential channel. On macOS, native entry stays outside
+T3's browser tooling and history. For real browser entry, give the user the link
+to open directly instead of automating the form through T3's preview tools.
+
+The file is on the **agent's machine**. A native dialog requires that machine's
+desktop session. Over SSH use `--ui browser --no-open` and a user-authorized SSH
+port forward to the loopback port; open the form on the user's machine. Do not
+bind it to `0.0.0.0`, publish it, or expose it through a public preview/tunnel.
+Keep the local and forwarded port equal because the helper checks Host/Origin.
+
+The saved file is plaintext with mode `0600`. This prevents accidental transcript
+entry through this workflow; it does not deny an agent or another process running
+as the user access to the file. A stronger boundary needs a broker/keychain and
+restricted execution. If a value was already pasted into chat, do not claim this
+removes it: avoid repeating it and recommend rotation.
+
+See [compatibility and verification](references/compatibility.md) for the source
+comparison, installation locations, tests, and exact limits.

@@ -24,6 +24,18 @@ once instead of leaving stale vintages behind.
 
 ## Skills
 
+### `request-secret`
+
+Requests API keys, tokens and passwords in a masked macOS dialog or a private
+localhost form, then saves directly to a mode-`0600` env file. Works through the
+ordinary shell tool in T3 Code with either Codex or Claude. Only names, paths and
+status return to the conversation. Refuses tracked or non-ignored Git targets;
+includes a literal env loader with child output suppressed by default.
+
+Symlink `request-secret` into `~/.codex/skills/` and `~/.claude/skills/`.
+See [the skill](request-secret/SKILL.md) for usage and
+[compatibility](request-secret/references/compatibility.md) for its privacy limits.
+
 ### `metacheck`
 
 Reviews a scientific manuscript with the `metacheck` R package, then has an agent
