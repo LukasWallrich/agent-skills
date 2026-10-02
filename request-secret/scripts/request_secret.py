@@ -216,11 +216,9 @@ def native_values(names, path, timeout):
 
 
 def form_html(names, path, nonce):
-    fields = "".join(f'<label for="{name}">{name}</label><div class="entry"><input id="{name}" '
+    fields = "".join(f'<label for="{name}">{name}</label><input id="{name}" '
                      f'name="{name}" type="password" autocomplete="off" required '
-                     'spellcheck="false" autocapitalize="none">'
-                     f'<button type="button" class="reveal" aria-controls="{name}" '
-                     f'aria-label="Show {name}" aria-pressed="false">Show</button></div>' for name in names)
+                     'spellcheck="false" autocapitalize="none">' for name in names)
     return f'''<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Private credential entry</title><style nonce="{nonce}">
@@ -228,26 +226,24 @@ def form_html(names, path, nonce):
 h1{{font-size:28px}}p{{line-height:1.5}}code{{overflow-wrap:anywhere}}label{{display:block;margin:24px 0 8px}}
 input{{box-sizing:border-box;width:100%;padding:12px;font:inherit;border:1px solid #888;border-radius:6px}}
 button{{padding:12px 20px;font:inherit;cursor:pointer;margin:24px 12px 0 0;border-radius:6px}}
-.entry{{display:flex;gap:8px}}.entry input{{min-width:0;flex:1}}.entry button{{margin:0;min-width:80px;padding:12px}}
 #message{{min-height:1.5em}}.muted{{opacity:.7}}</style>
 <h1>Private credential entry</h1><p>Save directly to <code>{html.escape(str(path))}</code>.</p>
 <p class="muted">Values go to the local helper, outside the agent's conversation. The file is plaintext, readable by your user account.</p>
-<form autocomplete="off">{fields}<button type="submit">Save credentials</button>
+<form autocomplete="off">{fields}<button type="button" id="reveal" aria-controls="{' '.join(names)}" aria-pressed="false">Show values</button>
+<button type="submit">Save credentials</button>
 <button type="button" id="cancel">Cancel</button></form><p id="message" role="status"></p>
 <script nonce="{nonce}">
 const token=location.hash.slice(1);history.replaceState(null,'',location.pathname);
-const form=document.querySelector('form'),message=document.querySelector('#message');
-function setVisibility(button,visible){{
-  const input=document.getElementById(button.getAttribute('aria-controls'));
-  input.type=visible?'text':'password';button.textContent=visible?'Hide':'Show';
-  button.setAttribute('aria-label',(visible?'Hide ':'Show ')+input.name);
-  button.setAttribute('aria-pressed',String(visible));
+const form=document.querySelector('form'),message=document.querySelector('#message'),reveal=document.querySelector('#reveal');
+function setVisibility(visible){{
+  form.querySelectorAll('input').forEach(input=>input.type=visible?'text':'password');
+  reveal.textContent=visible?'Hide values':'Show values';
+  reveal.setAttribute('aria-pressed',String(visible));
 }}
-form.querySelectorAll('.reveal').forEach(button=>button.addEventListener('click',()=>
-  setVisibility(button,button.getAttribute('aria-pressed')!=='true')));
+reveal.addEventListener('click',()=>setVisibility(reveal.getAttribute('aria-pressed')!=='true'));
 async function submit(action,values){{
   form.querySelectorAll('input').forEach(input=>input.value='');
-  form.querySelectorAll('.reveal').forEach(button=>setVisibility(button,false));
+  setVisibility(false);
   form.querySelectorAll('button').forEach(button=>button.disabled=true);
   try{{const response=await fetch('/'+action,{{method:'POST',headers:{{'Content-Type':'application/json','X-Request-Token':token}},body:JSON.stringify({{values}})}});
     const result=await response.json();values=null;message.textContent=result.message;

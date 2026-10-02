@@ -123,10 +123,11 @@ class PrivateEntryTests(unittest.TestCase):
         self.assertEqual(self.post(form, {"TEST_KEY": DUMMY, "SECOND_KEY": "second"})[0], 200)
 
     def test_explicit_address_uses_matching_url_host_and_origin(self):
-        # A second loopback address exercises routing without requiring Tailscale in CI.
-        form = self.form(bind_address="127.0.0.2")
-        self.assertEqual(form.server.server_address[0], "127.0.0.2")
-        self.assertTrue(form.url.startswith("http://127.0.0.2:"))
+        # The localhost alias tests a distinct advertised host without requiring
+        # Tailscale or an extra loopback address (127.0.0.2 is absent on macOS).
+        form = self.form(bind_address="localhost")
+        self.assertEqual(form.server.server_address[0], "127.0.0.1")
+        self.assertTrue(form.url.startswith("http://localhost:"))
         self.assertEqual(self.post(form, Host=f"127.0.0.1:{form.server.server_port}")[0], 403)
         self.assertEqual(self.post(form, Origin=f"http://127.0.0.1:{form.server.server_port}")[0], 403)
         self.assertEqual(self.post(form, **{"X-Request-Token": "wrong"})[0], 403)
@@ -159,7 +160,7 @@ class PrivateEntryTests(unittest.TestCase):
             original_receipt(status, **metadata)
             if status == "waiting":
                 origin, token = metadata["url"].split("/#")
-                self.assertTrue(origin.startswith("http://127.0.0.2:" if tailnet else "http://127.0.0.1:"))
+                self.assertTrue(origin.startswith("http://localhost:" if tailnet else "http://127.0.0.1:"))
                 body = json.dumps({"values": {"TEST_KEY": DUMMY, "SECOND_KEY": "second"}}).encode()
                 request = urllib.request.Request(origin + "/save", data=body,
                     headers={"Origin": origin, "X-Request-Token": token, "Content-Type": "application/json"})
@@ -167,7 +168,7 @@ class PrivateEntryTests(unittest.TestCase):
                 with opener.open(request, timeout=3) as response:
                     self.assertEqual(response.code, 200)
         with patch.object(secret.sys, "platform", "darwin"), \
-             patch.object(secret, "tailnet_address", return_value="127.0.0.2") as address, \
+             patch.object(secret, "tailnet_address", return_value="localhost") as address, \
              patch.object(secret, "native_values") as native, \
              patch.object(secret.webbrowser, "open") as browser, \
              patch.object(secret, "receipt", side_effect=receipt_and_submit), \

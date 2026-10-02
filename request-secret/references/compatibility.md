@@ -89,7 +89,8 @@ but does not grant access to saved values. It is not a saved API credential.
 Both entry UIs provide Show/Hide controls to verify the value before saving. Native
 Show/Hide redraws the dialog with the same value, entirely inside the captured
 osascript process; it does not pass the value through another tool call or argv.
-Browser Show/Hide switches the input type locally and preserves its value.
+The browser's single Show/Hide button reveals or masks all inputs together and
+preserves their values.
 Revealing a value does not change the receipt or file handling.
 
 After the helper confirms a successful save, the page calls `window.close()`.

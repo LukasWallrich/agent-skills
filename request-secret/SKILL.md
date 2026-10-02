@@ -58,8 +58,8 @@ for several values also use this form on macOS. Use
 `--ui browser` to choose the form explicitly; `--no-open` leaves opening the URL
 to the user. Remote tailnet entry is described below. Existing
 entries with those names are replaced; other entries are preserved. Cancel or
-timeout saves nothing. The default timeout is ten minutes. Each browser input also
-has a Show/Hide button; revealing changes only local display, not transcript output.
+timeout saves nothing. The default timeout is ten minutes. The browser form has
+one Show/Hide button for all values; revealing changes only local display, not transcript output.
 After a confirmed browser save, the page tries to close its tab. If browser policy
 blocks closing, it displays a saved confirmation and invites the user to close it.
 
