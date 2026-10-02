@@ -46,6 +46,15 @@ mark.hc-del {
   padding: 0 .04em;
   border-radius: 2px;
 }
+/* The neighbouring word an Edit-mode insertion is anchored to: unchanged text. */
+mark.hc-highlight.hc-anchor { background: transparent; cursor: inherit; }
+.hc-edit-mode mark.hc-highlight { cursor: text; }
+
+/* ---- Edit mode: the page's text blocks are editable ---- */
+.hc-edit-mode .hc-editable { cursor: text; border-radius: 3px; }
+.hc-edit-mode .hc-editable:hover { box-shadow: 0 0 0 1px rgba(37, 99, 235, .25); }
+.hc-edit-mode .hc-editable:focus { outline: 2px solid var(--hc-accent); outline-offset: 2px; }
+.hc-edit-mode .hc-editable [contenteditable="false"] { cursor: default; }
 
 /* ---- Overlay root ---- */
 #hc-root {
@@ -80,6 +89,25 @@ mark.hc-del {
   justify-content: center;
 }
 .hc-toggle:hover { background: var(--hc-accent-ink); }
+.hc-edit-toggle {
+  position: fixed;
+  right: 82px;
+  bottom: 24px;
+  z-index: 2147483000;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--hc-border);
+  background: var(--hc-bg);
+  font-size: 19px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hc-edit-toggle:hover { border-color: var(--hc-accent); }
+.hc-edit-toggle.hc-active { background: var(--hc-accent); border-color: var(--hc-accent); box-shadow: 0 0 0 3px rgba(37, 99, 235, .3), 0 4px 14px rgba(0, 0, 0, .22); }
 .hc-count {
   position: absolute;
   top: -4px;
@@ -477,6 +505,7 @@ mark.hc-del {
 /* ---- Print: hide everything from this overlay ---- */
 @media print {
   #hc-root, .hc-toolbar, .hc-composer, .hc-banner { display: none !important; }
+  .hc-editable { outline: none !important; box-shadow: none !important; }
   mark.hc-highlight, mark.hc-del { background: transparent !important; color: inherit !important; text-decoration: none !important; box-shadow: none !important; }
   .hc-ins { display: none !important; }
 }

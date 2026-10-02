@@ -41,8 +41,9 @@ Reach for the shared endpoint below instead when several people comment on the s
 when threads have to survive the tab, or when the comments need reading back without the
 reviewer pasting them.
 
-`bin/test-local-comments.py` drives local mode through eighteen cases in headless Chrome and
-exits non-zero on any failure. Run it after touching `assets/html-comments.js`.
+`bin/test-local-comments.py` drives local mode, Edit mode included, through 34 cases in
+headless Chrome and exits non-zero on any failure. Run it after touching
+`assets/html-comments.js`.
 
 ## ⚠️ FIRST: choose a unique `data-project` slug
 
@@ -165,6 +166,30 @@ offers 💬 Comment or ✏️ Suggest. Threads can be replied to, resolved and r
 whoever posted a comment or reply can edit or delete it. Posting requires a name, remembered
 in that browser.
 
+### Edit mode: type into the page, get tracked changes
+
+The ✏️ button next to 💬 switches Edit mode on. Paragraphs, list items, headings, table
+cells and captions become editable, and the reviewer types as in a word processor. When a
+block loses focus (click elsewhere, Enter, switching Edit mode off), its text is diffed word
+by word against the original and every change becomes an ordinary `suggestion` record, the
+same as one made with ✏️ Suggest, tagged `via: "edit"` in the note. The block then goes back
+to its original DOM and shows the changes as tracked changes. Escape abandons the block's
+edit. The page's own text never changes, so a reload shows the same tracked changes from the
+stored records, and sidebar, export, offline queue and review-comments work as for any
+suggestion. Edit mode works in local and shared mode; in shared mode it needs a name first.
+
+- **Pure insertion**: the quote is the word before the insertion (or after it, at the start
+  of a block), and the replacement repeats that word: `"two"` → `"two and a half"`.
+- **Editing again**: the reviewer edits the block's original text with their own Edit-mode
+  suggestions applied. A change on the same words as an existing one updates it with an
+  `edit` record. A suggestion whose words are no longer changed that way is deleted, or, if
+  it has replies, resolved with a "superseded" reply. Typing the original back therefore
+  withdraws a suggestion.
+- **Other suggestions** (other reviewers', or made with ✏️ Suggest) stay visible but are not
+  applied to the editable text.
+- **While Edit mode is on**, selecting text does not offer 💬/✏️ and clicking a highlight
+  places the caret; switch Edit mode off to comment or open threads from the page.
+
 Authorship is the name in the browser, so anyone typing the same name can edit or delete
 that person's records.
 
@@ -187,7 +212,8 @@ each item in the source, applying suggestions, replying to and resolving threads
 
 ## Debug hooks
 
-`window.__hcVersion` exposes the running version and `window.__hcState()` internal state.
+`window.__hcVersion` exposes the running version and `window.__hcState()` internal state
+(including `editMode` and `editing`).
 `window.__hcInjectRows(rows)` renders fake rows through the real pipeline — but a later
 server refresh replaces them; to keep injected rows put, pass them as `debugRows` in
 `HC_CONFIG` instead, which also skips the server read. A missing/old backend or a

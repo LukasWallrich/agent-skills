@@ -44,6 +44,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Fixture</title
 <p id="b">Beta with &lt;angle&gt; brackets &amp; an ampersand and "quotes" in it.</p>
 <p id="c">Gamma paragraph for cross-boundary selections.</p>
 <p id="d">The word Sokolov appears here, and the word Sokolov appears again.</p>
+<p id="e">Some <em>emphasised words</em> in a
+   line that wraps in the source.</p>
 <input id="field" value="text inside a form field">
 </body></html>"""
 
@@ -204,6 +206,128 @@ CASES = [
   localStorage.setItem('hc-local-fixture', JSON.stringify(rows));
   return L.markdown().includes('(no comments)') ? '' : 'deleted thread remains';
 """),
+("edit mode is off by default and leaves no editable text when switched off", """
+  if (q('#a').isContentEditable) return "page editable before Edit mode";
+  click('.hc-edit-toggle');
+  if (!q('#a').isContentEditable) return "Edit mode did not make #a editable";
+  if (q('#hc-root').isContentEditable) return "the overlay UI became editable";
+  click('.hc-edit-toggle');
+  if (document.querySelectorAll('[contenteditable]').length) return "contenteditable left behind";
+  comment('a', 0, 9, 'normal comment after Edit mode');
+  return L.log().length === 1 ? "" : "commenting broke after Edit mode";
+"""),
+("edit mode: replacing a word stores one suggestion", """
+  edit('a', function (b) { overtype(b, 'three', '3'); });
+  var log = L.log();
+  if (log.length !== 1) return log.length + " rows written";
+  var n = JSON.parse(log[0].note);
+  if (log[0].vote !== 'suggestion' || n.kind !== 'suggestion' || n.via !== 'edit') return "wrong record type";
+  if (n.anchor.quote !== 'three' || n.replacement !== '3') return JSON.stringify([n.anchor.quote, n.replacement]);
+  if (!n.anchor.prefix || !n.anchor.suffix) return "no context recorded";
+  return tracked() === 'del:three|ins:3' ? "" : tracked();
+"""),
+("edit mode: deleting a phrase", """
+  edit('a', function (b) { overtype(b, 'four five ', ''); });
+  var n = JSON.parse(L.log()[0].note);
+  if (n.anchor.quote !== 'four five' || n.replacement !== '') return JSON.stringify([n.anchor.quote, n.replacement]);
+  return tracked() === 'del:four five|ins:' ? "" : tracked();
+"""),
+("edit mode: inserting text anchors on the word before it", """
+  edit('a', function (b) { insertAfter(b, 'two', ' and a half'); });
+  var n = JSON.parse(L.log()[0].note);
+  if (n.anchor.quote !== 'two' || n.replacement !== 'two and a half') return JSON.stringify([n.anchor.quote, n.replacement]);
+  if (q('mark.hc-del')) return "the anchor word is struck through";
+  return tracked() === 'ins: and a half' ? "" : tracked();
+"""),
+("edit mode: inserting at the start of a block anchors on the word after it", """
+  edit('c', function (b) {
+    var t = b.firstChild, r = document.createRange();
+    r.setStart(t, 0); r.collapse(true);
+    var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    if (!document.execCommand('insertText', false, 'New ')) throw new Error('execCommand refused');
+  });
+  var n = JSON.parse(L.log()[0].note);
+  if (n.anchor.quote !== 'Gamma' || n.replacement !== 'New Gamma') return JSON.stringify([n.anchor.quote, n.replacement]);
+  if (q('mark.hc-del')) return "the anchor word is struck through";
+  if (tracked() !== 'ins:New ') return tracked();
+  if (q('#c').firstChild !== q('#c .hc-ins')) return "insertion not placed before the word";
+  click('.hc-edit-toggle');
+  var rows = L.log();
+  window.__hcReset();
+  window.__hcInjectRows(rows);
+  return tracked() === 'ins:New ' && q('#c').firstChild === q('#c .hc-ins') ? "" : "after reload: " + tracked();
+"""),
+("edit mode: two edits in one paragraph, then a third later", """
+  edit('a', function (b) { overtype(b, 'one', 'uno'); overtype(b, 'nine', 'nueve'); });
+  if (L.log().length !== 2) return L.log().length + " rows after the first edit";
+  var first = L.log().map(function (r) { return r.itemId; }).join();
+  edit('a', function (b) { overtype(b, 'Alpha', 'Omega'); });
+  var log = L.log();
+  if (log.length !== 3) return log.length + " rows after the second edit";
+  if (log.slice(0, 2).map(function (r) { return r.itemId; }).join() !== first) return "earlier suggestions were replaced";
+  return tracked() === 'del:Alpha|ins:Omega|del:one|ins:uno|del:nine|ins:nueve' ? "" : tracked();
+"""),
+("edit mode: re-editing a change updates it instead of adding one", """
+  edit('a', function (b) { overtype(b, 'three', '3'); });
+  edit('a', function (b) { overtype(b, '3', 'THREE'); });
+  var log = L.log();
+  if (log.length !== 2 || log[1].vote !== 'edit') return log.map(function (r) { return r.vote; }).join();
+  if (tracked() !== 'del:three|ins:THREE') return tracked();
+  var md = L.markdown();
+  return md.indexOf('Replace with: "THREE"') > -1 && md.indexOf('"3"') === -1 ? "" : md;
+"""),
+("edit mode: typing the original back withdraws the suggestion", """
+  edit('a', function (b) { overtype(b, 'three', '3'); });
+  edit('a', function (b) { overtype(b, '3', 'three'); });
+  if (q('.hc-ins') || q('mark.hc-del')) return "tracked change still shown: " + tracked();
+  return L.markdown().indexOf('(no comments)') > -1 ? "" : L.markdown();
+"""),
+("edit mode: focus and blur without typing posts nothing", """
+  edit('a', function () {});
+  return L.log().length ? L.log().length + " rows written" : "";
+"""),
+("edit mode: escape abandons the edit", """
+  click('.hc-edit-toggle');
+  var b = q('#a'); focusBlock(b);
+  overtype(b, 'three', '3');
+  b.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+  if (__hcState().editing) blurBlock(b);
+  if (L.log().length) return "stored an abandoned edit";
+  return q('#a').textContent.indexOf('three') > -1 ? "" : "the typed text stayed on the page";
+"""),
+("edit mode: inline formatting survives an edit", """
+  edit('e', function (b) { overtype(b, 'emphasised', 'stressed'); });
+  var n = JSON.parse(L.log()[0].note);
+  if (n.anchor.quote !== 'emphasised' || n.replacement !== 'stressed') return JSON.stringify([n.anchor.quote, n.replacement]);
+  var em = q('#e em');
+  if (!em) return "the <em> was lost";
+  return em.querySelector('mark.hc-del') && em.querySelector('.hc-ins') ? "" : q('#e').innerHTML;
+"""),
+("edit mode: reload shows the same tracked changes", """
+  edit('a', function (b) { overtype(b, 'three', '3'); overtype(b, 'seven eight ', ''); insertAfter(b, 'eleven', ' more'); });
+  var before = tracked();
+  if (before.split('|').length < 3) return "edits not rendered: " + before;
+  click('.hc-edit-toggle');
+  var rows = L.log();
+  window.__hcReset();
+  if (q('.hc-ins')) return "reset left tracked changes";
+  window.__hcInjectRows(rows);
+  return tracked() === before ? "" : before + " vs " + tracked();
+"""),
+("edit mode: a re-render arriving mid-edit does not lose the typing", """
+  edit('a', function (b) {
+    overtype(b, 'three', '3');
+    window.__hcInjectRows(L.log());  /* what a background refresh does */
+    overtype(b, 'ten', '10');
+  });
+  return tracked() === 'del:three|ins:3|del:ten|ins:10' ? "" : tracked();
+"""),
+("edit mode: the export carries the suggestions", """
+  edit('a', function (b) { overtype(b, 'three', '3'); insertAfter(b, 'six', ' and a half'); });
+  var md = L.markdown();
+  return md.indexOf('Anchor: "three"') > -1 && md.indexOf('Replace with: "3"') > -1 &&
+    md.indexOf('Replace with: "six and a half"') > -1 && md.indexOf('Context:') > -1 ? "" : md;
+"""),
 ("nothing is posted to a network", """
   comment('a', 0, 9, 'stays here');
   return window.__hcFetched ? "the overlay called fetch" : "";
@@ -267,12 +391,73 @@ window.addEventListener("load", function () {
     }
   }
 
+  /* Edit mode: focus a block, change its text the way typing would, blur. */
+  function focusBlock(b) {
+    b.focus();
+    if (!window.__hcState().editing) b.dispatchEvent(new FocusEvent('focusin', {bubbles: true}));
+  }
+  function blurBlock(b) {
+    b.blur();
+    if (window.__hcState().editing) b.dispatchEvent(new FocusEvent('focusout', {bubbles: true}));
+  }
+  function editableNodes(b) {
+    var out = [], w = document.createTreeWalker(b, NodeFilter.SHOW_TEXT), n;
+    while ((n = w.nextNode())) {
+      var p = n.parentNode, ok = true;
+      for (; p && p !== b; p = p.parentNode) if (p.getAttribute('contenteditable') === 'false') ok = false;
+      if (ok) out.push(n);
+    }
+    return out;
+  }
+  function selectText(b, word, collapseToEnd) {
+    var nodes = editableNodes(b);
+    for (var i = 0; i < nodes.length; i++) {
+      var k = nodes[i].nodeValue.indexOf(word);
+      if (k < 0) continue;
+      var r = document.createRange();
+      r.setStart(nodes[i], k); r.setEnd(nodes[i], k + word.length);
+      if (collapseToEnd) r.collapse(false);
+      var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      return nodes[i];
+    }
+    throw new Error('"' + word + '" not found in editable text');
+  }
+  function overtype(b, word, text) {
+    selectText(b, word, false);
+    var ok = text ? document.execCommand('insertText', false, text)
+                  : document.execCommand('delete');
+    if (!ok) throw new Error('execCommand refused');
+  }
+  function insertAfter(b, word, text) {
+    selectText(b, word, true);
+    if (!document.execCommand('insertText', false, text)) throw new Error('execCommand refused');
+  }
+  function edit(id, fn) {
+    if (!window.__hcState().editMode) click('.hc-edit-toggle');
+    if (!window.__hcState().editMode) throw new Error('Edit mode did not switch on');
+    var b = q('#' + id);
+    focusBlock(b);
+    if (!window.__hcState().editing) throw new Error('focusing #' + id + ' did not start an edit');
+    fn(b);
+    blurBlock(b);
+    if (window.__hcState().editing) throw new Error('blur did not commit');
+  }
+  /* The tracked changes on the page, in document order. */
+  function tracked() {
+    return Array.prototype.map.call(document.querySelectorAll('mark.hc-del, .hc-ins'), function (n) {
+      return (n.classList.contains('hc-ins') ? 'ins:' : 'del:') + n.textContent;
+    }).join('|');
+  }
+  window.focusBlock = focusBlock; window.blurBlock = blurBlock; window.edit = edit;
+  window.overtype = overtype; window.insertAfter = insertAfter; window.tracked = tracked;
+
   window.q = q; window.click = click; window.mouseup = mouseup;
   window.select = select; window.comment = comment; window.suggest = suggest;
   window.L = L;
 
   var results = [];
   CASES.forEach(function (c) {
+    if (window.__hcState().editMode) click('.hc-edit-toggle');
     localStorage.removeItem('hc-local-fixture');
     if (window.__hcReset) window.__hcReset();
     var stale = document.querySelector('.hc-composer');

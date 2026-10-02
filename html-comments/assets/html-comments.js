@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  var HC_VERSION = '2026-09-25.1';
+  var HC_VERSION = '2026-10-02.1';
 
   // Loading the overlay twice (e.g. a page that both inlines the script and
   // loads it from the asset host) would produce two sidebars, two toolbars and
@@ -636,8 +636,9 @@
   // selection touching it has no position in the index at all. Snap such
   // boundaries onto the original text the suggestion replaces, which is what a
   // comment on a suggested edit should anchor to anyway.
-  // The range covering the original text that this .hc-ins replaces. Those
-  // marks always sit immediately before it in the DOM (see applyHighlights).
+  // The range over the original text that this .hc-ins belongs to: the span of
+  // its suggestion's marks. The .hc-ins sits directly after the marks, or
+  // directly before them for an Edit-mode insertion at the start of a block.
   function insHostRange(insEl) {
     var id = insEl.getAttribute('data-hc-id');
     var entry = id && registry[id];
@@ -1046,27 +1047,37 @@
       th._orphan = false;
       var isSug = th.kind === 'suggestion' && showSuggestionsEffective();
       var repl = th.root.note.replacement;
-      var marks = wrapRange(range, isSug ? 'hc-highlight hc-del' : 'hc-highlight', th.id);
+      var insAt = isSug ? editInsertionSide(th) : null;
+      var cls = !isSug ? 'hc-highlight' : (insAt ? 'hc-highlight hc-anchor' : 'hc-highlight hc-del');
+      var marks = wrapRange(range, cls, th.id);
       if (!marks.length) { th._orphan = true; return; }
       var entry = { marks: marks, ins: null };
       if (isSug) {
         var ins = document.createElement('span');
         ins.className = 'hc-ins';
         ins.setAttribute('data-hc-id', th.id);
-        ins.textContent = repl || '';
-        var last = marks[marks.length - 1];
-        last.parentNode.insertBefore(ins, last.nextSibling);
+        var qlen = th.anchor.quote.length;
+        ins.textContent = insAt === 'after' ? repl.slice(qlen)
+          : insAt === 'before' ? repl.slice(0, repl.length - qlen) : (repl || '');
+        if (insAt === 'before') {
+          marks[0].parentNode.insertBefore(ins, marks[0]);
+        } else {
+          var last = marks[marks.length - 1];
+          last.parentNode.insertBefore(ins, last.nextSibling);
+        }
         entry.ins = ins;
       }
       registry[th.id] = entry;
-      // click on highlight -> open sidebar to thread
-      marks.forEach(function (m) {
-        m.addEventListener('click', function (ev) {
-          ev.stopPropagation();
-          openSidebar();
-          focusThread(th.id, false);
-        });
-      });
+      // click on highlight -> open sidebar to thread. In Edit mode a click
+      // places the caret instead.
+      var openThread = function (ev) {
+        if (EDIT_MODE) return;
+        ev.stopPropagation();
+        openSidebar();
+        focusThread(th.id, false);
+      };
+      marks.forEach(function (m) { m.addEventListener('click', openThread); });
+      if (entry.ins && th.root.note.via === 'edit') entry.ins.addEventListener('click', openThread);
     });
     assignDocPositions();
   }
@@ -1087,7 +1098,20 @@
     });
   }
 
+  // A suggestion made in Edit mode that only adds words keeps the neighbouring
+  // word as its quote and repeats it in the replacement. Show just the added
+  // words, on the side they were typed, instead of striking the neighbour.
+  function editInsertionSide(th) {
+    var note = th.root.note, q = (th.anchor && th.anchor.quote) || '';
+    var repl = note.replacement || '';
+    if (note.via !== 'edit' || !q || repl.length <= q.length) return null;
+    if (repl.slice(0, q.length) === q) return 'after';
+    if (repl.slice(-q.length) === q) return 'before';
+    return null;
+  }
+
   function showSuggestionsEffective() {
+    if (EDIT_MODE) return true; // the reviewer is looking at their own changes
     if (showSuggestions != null) return showSuggestions;
     // default ON when any suggestion exists
     return THREADS.some(function (t) { return t.kind === 'suggestion'; });
@@ -1117,6 +1141,12 @@
       class: 'hc-toggle', title: 'Comments',
       onclick: function () { toggleSidebar(); }
     }, ['💬', el('span', { class: 'hc-count' })]);
+
+    UI.editBtn = el('button', {
+      class: 'hc-edit-toggle', 'aria-pressed': 'false',
+      title: 'Edit mode: type into the page; changes are kept as suggested edits',
+      onclick: function () { setEditMode(!EDIT_MODE); }
+    }, ['✏️']);
 
     // Sidebar panel
     UI.panel = el('aside', { class: 'hc-panel', 'aria-hidden': 'true' });
@@ -1191,6 +1221,7 @@
     UI.panel.appendChild(UI.list);
 
     root.appendChild(UI.toggleBtn);
+    root.appendChild(UI.editBtn);
     root.appendChild(UI.panel);
     document.body.appendChild(root);
 
@@ -1620,6 +1651,8 @@
 
   function onMouseUp(e) {
     if (e.target.closest && e.target.closest('.hc-ui')) return;
+    // Selecting in Edit mode is for overtyping; Comment/Suggest need Edit off.
+    if (EDIT_MODE) { clearToolbar(); return; }
     setTimeout(function () {
       var sel = window.getSelection();
       if (!sel || sel.isCollapsed || !sel.toString().trim() || selectionInsideUI(sel)) {
@@ -1800,9 +1833,341 @@
   });
 
   /* ------------------------------------------------------------------ *
+   * 10b. Edit mode: type into the page; each change becomes a suggestion *
+   * ------------------------------------------------------------------ */
+  // With Edit mode on, text blocks are contenteditable. While a block has
+  // focus the reviewer types freely; on blur its text is diffed word by word
+  // against the original, each change is posted as an ordinary suggestion
+  // record (tagged via:'edit'), and the block's original DOM is put back so
+  // the changes render as tracked changes. The page's own text never changes.
+  //
+  // The editable text of a block is the original with this reviewer's own
+  // open Edit-mode suggestions applied. Every edit is diffed against the
+  // original, so a second edit to the same words updates the existing
+  // suggestion instead of stacking a new one on top of it (see reconcileEdit).
+  var EDIT_MODE = false;
+  var ACTIVE = null;  // the block being typed into; see beginEdit
+
+  var EDIT_BLOCK_SEL = 'p,li,h1,h2,h3,h4,h5,h6,td,th,dd,dt,figcaption,caption,blockquote';
+  // A block holding another block (an li wrapping a p or a nested list) is
+  // left alone; the inner blocks are the editable units.
+  var EDIT_INNER_SEL = EDIT_BLOCK_SEL + ',div,ul,ol,table,pre,section,article,figure';
+
+  function editableBlocks() {
+    return Array.prototype.filter.call(document.querySelectorAll(EDIT_BLOCK_SEL), function (b) {
+      if (b.closest('.hc-ui, #hc-root, pre, [contenteditable]')) return false;
+      return !b.querySelector(EDIT_INNER_SEL);
+    });
+  }
+
+  function setEditMode(on) {
+    on = !!on;
+    if (on === EDIT_MODE) return;
+    if (on && !getName()) {
+      // Every suggestion needs an author.
+      openSidebar();
+      UI.whoInput.classList.add('hc-invalid');
+      UI.whoInput.focus();
+      return;
+    }
+    if (!on && ACTIVE) commitEdit();
+    EDIT_MODE = on;
+    if (on) {
+      clearToolbar();
+      clearComposer();
+      editableBlocks().forEach(function (b) {
+        b.setAttribute('contenteditable', 'true');
+        b.classList.add('hc-editable');
+      });
+    } else {
+      Array.prototype.forEach.call(document.querySelectorAll('.hc-editable'), function (b) {
+        b.removeAttribute('contenteditable');
+        b.classList.remove('hc-editable');
+      });
+    }
+    document.documentElement.classList.toggle('hc-edit-mode', on);
+    UI.editBtn.classList.toggle('hc-active', on);
+    UI.editBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    renderAll(true);
+  }
+
+  // The block with every overlay element stripped: what it looked like before
+  // the overlay touched it, and what it goes back to after an edit.
+  function cleanClone(block) {
+    var c = block.cloneNode(true);
+    Array.prototype.forEach.call(c.querySelectorAll('.hc-ins'), function (n) { n.remove(); });
+    var m;
+    while ((m = c.querySelector('mark[data-hc-id]'))) unwrapMark(m);
+    c.normalize();
+    return c;
+  }
+
+  // The text the reviewer currently sees as the block's content: original
+  // text, minus what their own suggestions delete, plus what they insert.
+  // Other reviewers' proposed insertions are not part of it.
+  function editedText(block, mineIds) {
+    var out = '', n;
+    var walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    outer: while ((n = walker.nextNode())) {
+      for (var p = n.parentNode; p && p !== block; p = p.parentNode) {
+        if (p.nodeType !== 1) continue;
+        if (/^(SCRIPT|STYLE|NOSCRIPT)$/.test(p.tagName)) continue outer;
+        var id = p.getAttribute('data-hc-id');
+        if (p.classList.contains('hc-ins') && !mineIds[id]) continue outer;
+        if (p.tagName === 'MARK' && p.classList.contains('hc-del') && mineIds[id]) continue outer;
+      }
+      out += n.nodeValue;
+    }
+    return out.replace(/ /g, ' '); // contenteditable types nbsp for spaces at edges
+  }
+
+  function beginEdit(block) {
+    var idx = buildIndex(block);
+    var mine = [], mineIds = {};
+    THREADS.forEach(function (th) {
+      if (th.resolved || th.kind !== 'suggestion' || th.root.note.via !== 'edit' || !isOwn(th.root)) return;
+      var entry = registry[th.id];
+      if (!entry || !entry.marks.length || !block.contains(entry.marks[0])) return;
+      var r = document.createRange();
+      r.setStartBefore(entry.marks[0]);
+      r.setEndAfter(entry.marks[entry.marks.length - 1]);
+      var occ = findOccurrenceOffsets(idx, r);
+      if (!occ) return;
+      mine.push({ id: th.id, start: occ.start, end: occ.end,
+        replacement: th.root.note.replacement || '', text: th.root.note.text || '',
+        replies: th.replies.length });
+      mineIds[th.id] = true;
+    });
+    var snapshot = cleanClone(block);
+    // Text that is not typed into: own deletions (already gone from the
+    // reviewer's version) and other reviewers' proposed insertions.
+    Array.prototype.forEach.call(block.querySelectorAll('mark.hc-del, .hc-ins'), function (n) {
+      var own = !!mineIds[n.getAttribute('data-hc-id')];
+      if (n.classList.contains('hc-ins') ? !own : own) n.setAttribute('contenteditable', 'false');
+    });
+    ACTIVE = { block: block, snapshot: snapshot, orig: idx.text, mine: mine, mineIds: mineIds };
+    ACTIVE.before = editedText(block, mineIds);
+  }
+
+  function restoreBlock(a) {
+    ACTIVE = null;
+    a.block.textContent = '';
+    while (a.snapshot.firstChild) a.block.appendChild(a.snapshot.firstChild);
+  }
+
+  function cancelEdit() {
+    var a = ACTIVE;
+    if (!a) return;
+    restoreBlock(a);
+    a.block.blur();
+    renderAll(true);
+  }
+
+  function commitEdit() {
+    var a = ACTIVE;
+    if (!a) return;
+    var after = editedText(a.block, a.mineIds);
+    restoreBlock(a);
+    // Focus and blur without typing changes nothing, so it must post nothing.
+    if (after !== a.before) reconcileEdit(a, after);
+    renderAll(true);
+  }
+
+  // Word-level diff. Tokens are runs of whitespace or of non-whitespace; any
+  // two whitespace runs count as equal, so the source file's line breaks and
+  // indentation inside a paragraph never show up as changes.
+  function diffTokens(s) { return s.match(/\s+|\S+/g) || []; }
+  function isWs(ch) { return /\s/.test(ch); }
+  function tokEq(a, b) { return a === b || (isWs(a.charAt(0)) && isWs(b.charAt(0))); }
+  var DIFF_CELL_CAP = 4000000; // LCS table cells; beyond this one change spans the middle
+
+  // Hunks as char ranges: original [os, oe) became edited [es, ee).
+  function diffHunks(orig, edited) {
+    var A = diffTokens(orig), B = diffTokens(edited);
+    var aOff = [0], bOff = [0], i, j;
+    for (i = 0; i < A.length; i++) aOff.push(aOff[i] + A[i].length);
+    for (j = 0; j < B.length; j++) bOff.push(bOff[j] + B[j].length);
+    var p = 0;
+    while (p < A.length && p < B.length && tokEq(A[p], B[p])) p++;
+    var ea = A.length, eb = B.length;
+    while (ea > p && eb > p && tokEq(A[ea - 1], B[eb - 1])) { ea--; eb--; }
+    var n = ea - p, m = eb - p;
+    if (!n && !m) return [];
+    if (n * m > DIFF_CELL_CAP) return [{ os: aOff[p], oe: aOff[ea], es: bOff[p], ee: bOff[eb] }];
+
+    // L[i][j] = length of the longest common subsequence of A[p+i..] and B[p+j..]
+    var L = [];
+    for (i = 0; i <= n; i++) L.push(new Uint32Array(m + 1));
+    for (i = n - 1; i >= 0; i--) {
+      for (j = m - 1; j >= 0; j--) {
+        L[i][j] = tokEq(A[p + i], B[p + j]) ? L[i + 1][j + 1] + 1
+          : Math.max(L[i + 1][j], L[i][j + 1]);
+      }
+    }
+    var hunks = [], cur = null;
+    i = 0; j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && tokEq(A[p + i], B[p + j])) {
+        if (cur) { cur.oe = aOff[p + i]; cur.ee = bOff[p + j]; hunks.push(cur); cur = null; }
+        i++; j++;
+        continue;
+      }
+      if (!cur) cur = { os: aOff[p + i], es: bOff[p + j] };
+      if (i < n && (j === m || L[i + 1][j] >= L[i][j + 1])) i++; else j++;
+    }
+    if (cur) { cur.oe = aOff[ea]; cur.ee = bOff[eb]; hunks.push(cur); }
+    return hunks;
+  }
+
+  // The block's changes as suggestions over the original, each paired with the
+  // reviewer's existing suggestion on exactly the same words, if any. Changes
+  // separated only by a space are one change ("one two" -> "uno dos"), unless
+  // either already stands as a suggestion of its own.
+  function editChanges(a, after) {
+    var mineAt = {};
+    a.mine.forEach(function (m) { mineAt[m.start + ':' + m.end] = m; });
+    function item(h) {
+      var c = hunkToChange(a.orig, after, h);
+      return c && { h: h, c: c, m: mineAt[c.start + ':' + c.end] || null };
+    }
+    var out = [];
+    diffHunks(a.orig, after).map(item).filter(Boolean).forEach(function (it) {
+      var prev = out[out.length - 1];
+      if (prev && !prev.m && !it.m && !a.orig.slice(prev.h.oe, it.h.os).trim()) {
+        var joined = item({ os: prev.h.os, oe: it.h.oe, es: prev.h.es, ee: it.h.ee });
+        if (joined) { out[out.length - 1] = joined; return; }
+      }
+      out.push(it);
+    });
+    return out;
+  }
+
+  // A hunk as a suggestion over the original: { start, end, replacement }.
+  // A pure insertion has no original text to quote, so it quotes the word
+  // before it (or, at the very start, the word after it) and repeats that word
+  // in the replacement: "two" -> "two extra".
+  function hunkToChange(orig, edited, h) {
+    var s = h.os, e = h.oe, repl = edited.slice(h.es, h.ee);
+    while (s < e && repl && isWs(orig.charAt(s)) && isWs(repl.charAt(0))) { s++; repl = repl.slice(1); }
+    while (e > s && repl && isWs(orig.charAt(e - 1)) && isWs(repl.charAt(repl.length - 1))) {
+      e--; repl = repl.slice(0, -1);
+    }
+    if (!orig.slice(s, e).trim() && !repl.trim()) return null;
+    if (s < e && !repl) {
+      // A deleted phrase takes one of its bordering spaces with it; quote the
+      // words alone when the other border keeps the gap.
+      if (isWs(orig.charAt(e - 1)) && s > 0 && isWs(orig.charAt(s - 1))) {
+        while (e > s && isWs(orig.charAt(e - 1))) e--;
+      } else if (isWs(orig.charAt(s)) && e < orig.length && isWs(orig.charAt(e))) {
+        while (s < e && isWs(orig.charAt(s))) s++;
+      }
+    }
+    if (s < e) return { start: s, end: e, replacement: repl };
+    // "two |and a half |three": insert " and a half" after "two" instead.
+    if (s > 0 && isWs(orig.charAt(s - 1)) && isWs(repl.charAt(repl.length - 1))) {
+      while (s > 0 && isWs(orig.charAt(s - 1))) s--;
+      e = s;
+      repl = ' ' + repl.replace(/\s+$/, '');
+    }
+    var ws = s;
+    while (ws > 0 && isWs(orig.charAt(ws - 1))) ws--;
+    var w = ws;
+    while (w > 0 && !isWs(orig.charAt(w - 1))) w--;
+    if (w < ws) return { start: w, end: s, replacement: orig.slice(w, s) + repl };
+    var we = e;
+    while (we < orig.length && isWs(orig.charAt(we))) we++;
+    var w2 = we;
+    while (w2 < orig.length && !isWs(orig.charAt(w2))) w2++;
+    if (w2 > we) return { start: s, end: w2, replacement: repl + orig.slice(s, w2) };
+    return null; // the block had no words to anchor to
+  }
+
+  // Turn the block's new text into records. Rule for the reviewer's existing
+  // Edit-mode suggestions in this block, each compared with the new changes:
+  //   same words, same replacement   -> left as is
+  //   same words, new replacement    -> an `edit` record updates it in place
+  //                                     (thread and replies kept)
+  //   words no longer changed this way -> retired: deleted, or, if someone
+  //                                     replied, resolved with a note saying
+  //                                     a later edit superseded it
+  // Every remaining change becomes a new suggestion.
+  function reconcileEdit(a, after) {
+    var items = editChanges(a, after);
+    var used = {};
+    a.mine.forEach(function (m) {
+      for (var i = 0; i < items.length; i++) {
+        if (used[i] || items[i].m !== m) continue;
+        used[i] = true;
+        var repl = items[i].c.replacement;
+        if (repl !== m.replacement) {
+          record(genId(), 'edit', { v: 2, parentId: m.id, text: m.text, replacement: repl });
+        }
+        return;
+      }
+      if (m.replies) {
+        record(genId(), 'reply', { v: 2, parentId: m.id, text: 'Superseded by a later edit of this passage.' });
+        record(genId(), 'resolve', { v: 2, parentId: m.id });
+      } else {
+        record(genId(), 'delete', { v: 2, parentId: m.id });
+      }
+    });
+    var index = buildIndex(a.block); // the restored, original block
+    items.forEach(function (it, i) {
+      if (used[i]) return;
+      var c = it.c;
+      var s = locate(index, c.start), e = locate(index, c.end);
+      if (!s || !e) return;
+      var range = document.createRange();
+      try { range.setStart(s.node, s.offset); range.setEnd(e.node, e.offset); }
+      catch (err) { return; }
+      var anchor = anchorFromRange(range);
+      if (!anchor.quote) return;
+      record(genId(), 'suggestion', { v: 2, text: '', kind: 'suggestion', via: 'edit',
+        anchor: anchor, replacement: c.replacement });
+    });
+  }
+
+  function editBlockOf(node) {
+    var e = node && (node.nodeType === 1 ? node : node.parentNode);
+    return e && e.closest ? e.closest('.hc-editable') : null;
+  }
+
+  document.addEventListener('focusin', function (e) {
+    if (!EDIT_MODE) return;
+    var b = editBlockOf(e.target);
+    if (!b || (ACTIVE && ACTIVE.block === b)) return;
+    if (ACTIVE) commitEdit();
+    beginEdit(b);
+  });
+  document.addEventListener('focusout', function (e) {
+    if (ACTIVE && e.target === ACTIVE.block) commitEdit();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (!ACTIVE || !ACTIVE.block.contains(e.target)) return;
+    // A new paragraph cannot be a suggestion on this one: Enter ends the edit.
+    if (e.key === 'Enter') { e.preventDefault(); ACTIVE.block.blur(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+  }, true);
+  // Pasted or dropped markup would become page DOM; only its text is wanted.
+  document.addEventListener('paste', function (e) {
+    if (!ACTIVE || !ACTIVE.block.contains(e.target)) return;
+    e.preventDefault();
+    var t = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
+    document.execCommand('insertText', false, t.replace(/\s+/g, ' '));
+  });
+  document.addEventListener('drop', function (e) {
+    if (EDIT_MODE && editBlockOf(e.target)) e.preventDefault();
+  });
+  window.addEventListener('pagehide', function () { if (ACTIVE) commitEdit(); });
+
+  /* ------------------------------------------------------------------ *
    * 11. Orchestration                                                  *
    * ------------------------------------------------------------------ */
   function renderAll(rebuildThreads) {
+    // Re-rendering unwraps and re-wraps every highlight on the page, which
+    // would tear up the block being typed into. Catch up once it is committed.
+    // commitEdit and cancelEdit re-render when the block is done.
+    if (ACTIVE) return;
     if (rebuildThreads !== false) THREADS = buildThreads(ROWS);
     applyHighlights();
     renderSidebar();
@@ -1892,7 +2257,8 @@
   };
   window.__hcState = function () {
     return { version: HC_VERSION, rows: ROWS.length, threads: THREADS.length,
-      savedSelection: !!savedSel, composer: !!UI.composer };
+      savedSelection: !!savedSel, composer: !!UI.composer,
+      editMode: EDIT_MODE, editing: !!ACTIVE };
   };
 
   // Debug hook: what anchor would the current selection produce?

@@ -43,6 +43,34 @@ The `deploy-html` skill also needs the `surge` CLI on PATH and an authenticated 
 account (`surge login`, or `SURGE_LOGIN`/`SURGE_TOKEN`, or a `~/.netrc` entry for
 `machine surge.surge.sh`).
 
+## How Edit mode turns typing into suggestions
+
+The ✏️ button sets `contenteditable` on leaf text blocks (`p`, `li`, `h1`–`h6`, `td`, `th`,
+`dd`, `dt`, `figcaption`, `caption`, `blockquote`; a block containing another block is
+skipped in favour of the inner one). Nothing is saved while the reviewer types. When a block
+loses focus:
+
+1. Its edited text is read from the DOM: the original text, minus the reviewer's own
+   Edit-mode deletions, plus their own insertions; other reviewers' proposed insertions are
+   excluded.
+2. That text is diffed against the block's original text. Tokens are words and whitespace
+   runs, any two whitespace runs count as equal (source line breaks never become changes),
+   and the longest common subsequence of tokens gives the changes. A run of changed tokens
+   with no unchanged word inside it is one change, so an insertion typed directly next to a
+   replaced word joins it. Changes separated only by whitespace also merge into one, unless
+   one of them is already a suggestion of its own.
+3. Each change is posted as a normal `suggestion` record whose anchor is built from the
+   restored block by the same code as a mouse selection. A pure insertion quotes its
+   neighbouring word and repeats it in the replacement.
+4. The block's DOM is replaced by a clean copy taken when it gained focus, and the page
+   re-renders the suggestions as tracked changes. A refresh that arrives mid-edit waits
+   until the block is committed.
+
+The supersede rule compares each of the reviewer's existing Edit-mode suggestions in the
+block with the new changes: identical leaves it alone, same words with a new replacement
+posts an `edit`, and anything else retires it (`delete`, or `resolve` plus a reply when the
+thread has replies). Focus and blur without typing posts nothing.
+
 ## How offline review works
 
 The overlay keeps two localStorage stores per project — `hc-cache-<project>` (the last
