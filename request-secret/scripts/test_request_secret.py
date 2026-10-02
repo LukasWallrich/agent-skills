@@ -31,8 +31,9 @@ class PrivateEntryTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(SCRIPT), *args],
                               capture_output=True, text=True, timeout=15)
 
-    def form(self, timeout=30):
-        form = secret.FormRequest(["TEST_KEY"], self.path, secret.read_private(self.path), timeout)
+    def form(self, timeout=30, names=None, bind_address="127.0.0.1"):
+        form = secret.FormRequest(names or ["TEST_KEY"], self.path, secret.read_private(self.path),
+                                  timeout, bind_address=bind_address)
         form.start()
         self.addCleanup(form.close)
         return form
@@ -92,6 +93,109 @@ class PrivateEntryTests(unittest.TestCase):
                 self.assertNotIn(DUMMY, body)
         self.assertFalse(self.path.exists())
         self.assertFalse(form.done.is_set())
+
+    def test_batch_form_saves_all_values_together_and_preserves_unrelated_entries(self):
+        self.path.write_text("# keep comment\nKEEP=unchanged\nTEST_KEY=old\nSECOND_KEY=old\n")
+        form = self.form(names=["TEST_KEY", "SECOND_KEY"])
+        with urllib.request.urlopen(form.origin) as response:
+            body = response.read().decode()
+        self.assertIn('name="TEST_KEY" type="password"', body)
+        self.assertIn('name="SECOND_KEY" type="password"', body)
+        values = {"TEST_KEY": DUMMY, "SECOND_KEY": "dummy-second-key"}
+        self.assertEqual(self.post(form, values)[0], 200)
+        self.assertEqual(secret.env_values(self.path.read_text()), dict(values, KEEP="unchanged"))
+        self.assertTrue(self.path.read_text().startswith("# keep comment\n"))
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+
+    def test_incomplete_or_invalid_batch_changes_nothing_and_can_be_corrected(self):
+        original = "TEST_KEY=old\nSECOND_KEY=old\n"
+        self.path.write_text(original)
+        form = self.form(names=["TEST_KEY", "SECOND_KEY"])
+        for values in ({"TEST_KEY": DUMMY}, {"TEST_KEY": DUMMY, "SECOND_KEY": ""},
+                       {"TEST_KEY": DUMMY, "SECOND_KEY": "x\n"},
+                       {"TEST_KEY": DUMMY, "SECOND_KEY": "second", "EXTRA": "extra"}):
+            with self.subTest(names=list(values)):
+                code, body = self.post(form, values)
+                self.assertEqual(code, 400)
+                self.assertNotIn(DUMMY, body)
+                self.assertEqual(self.path.read_text(), original)
+                self.assertFalse(form.done.is_set())
+        self.assertEqual(self.post(form, {"TEST_KEY": DUMMY, "SECOND_KEY": "second"})[0], 200)
+
+    def test_explicit_address_uses_matching_url_host_and_origin(self):
+        # A second loopback address exercises routing without requiring Tailscale in CI.
+        form = self.form(bind_address="127.0.0.2")
+        self.assertEqual(form.server.server_address[0], "127.0.0.2")
+        self.assertTrue(form.url.startswith("http://127.0.0.2:"))
+        self.assertEqual(self.post(form, Host=f"127.0.0.1:{form.server.server_port}")[0], 403)
+        self.assertEqual(self.post(form, Origin=f"http://127.0.0.1:{form.server.server_port}")[0], 403)
+        self.assertEqual(self.post(form, **{"X-Request-Token": "wrong"})[0], 403)
+        self.assertEqual(self.post(form)[0], 200)
+
+    def test_tailnet_address_discovery_and_safe_failure(self):
+        reply = subprocess.CompletedProcess([], 0, "100.121.34.85\n", "")
+        with patch.object(secret.subprocess, "run", return_value=reply) as run:
+            self.assertEqual(secret.tailnet_address(), "100.121.34.85")
+            self.assertEqual(run.call_args.args[0], ["tailscale", "ip", "-4"])
+        for output, code in (("0.0.0.0", 0), ("127.0.0.1", 0), ("192.168.1.2", 0),
+                             ("8.8.8.8", 0), ("", 0), ("100.121.34.85", 1),
+                             ("100.121.34.85\n100.121.34.86", 0)):
+            with self.subTest(output=output, code=code), patch.object(secret.subprocess, "run",
+                    return_value=subprocess.CompletedProcess([], code, output, DUMMY)):
+                with self.assertRaises(secret.SafeError) as raised:
+                    secret.tailnet_address()
+                if output:
+                    self.assertNotIn(output, str(raised.exception))
+                self.assertNotIn(DUMMY, str(raised.exception))
+        for error in (FileNotFoundError(), subprocess.TimeoutExpired("tailscale", 10)):
+            with patch.object(secret.subprocess, "run", side_effect=error):
+                with self.assertRaises(secret.SafeError):
+                    secret.tailnet_address()
+
+    def mac_browser_batch(self, tailnet):
+        output = io.StringIO()
+        original_receipt = secret.receipt
+        def receipt_and_submit(status, **metadata):
+            original_receipt(status, **metadata)
+            if status == "waiting":
+                origin, token = metadata["url"].split("/#")
+                self.assertTrue(origin.startswith("http://127.0.0.2:" if tailnet else "http://127.0.0.1:"))
+                body = json.dumps({"values": {"TEST_KEY": DUMMY, "SECOND_KEY": "second"}}).encode()
+                request = urllib.request.Request(origin + "/save", data=body,
+                    headers={"Origin": origin, "X-Request-Token": token, "Content-Type": "application/json"})
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(request, timeout=3) as response:
+                    self.assertEqual(response.code, 200)
+        with patch.object(secret.sys, "platform", "darwin"), \
+             patch.object(secret, "tailnet_address", return_value="127.0.0.2") as address, \
+             patch.object(secret, "native_values") as native, \
+             patch.object(secret.webbrowser, "open") as browser, \
+             patch.object(secret, "receipt", side_effect=receipt_and_submit), \
+             contextlib.redirect_stdout(output):
+            code = secret.main(["request", "--file", str(self.path),
+                                *(["--tailnet"] if tailnet else []), "TEST_KEY", "SECOND_KEY"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["names"], ["TEST_KEY", "SECOND_KEY"])
+        self.assertNotIn(DUMMY, output.getvalue())
+        native.assert_not_called()
+        if tailnet:
+            address.assert_called_once_with()
+            browser.assert_not_called()
+        else:
+            address.assert_not_called()
+            browser.assert_called_once()
+
+    def test_tailnet_mode_selects_browser_on_mac_and_does_not_open_host_browser(self):
+        self.mac_browser_batch(tailnet=True)
+
+    def test_local_mac_batch_uses_one_loopback_browser_form(self):
+        self.mac_browser_batch(tailnet=False)
+
+    def test_native_tailnet_conflict_fails_before_ui(self):
+        result = self.cli("request", "--file", str(self.path), "--tailnet", "--ui", "native", "TEST_KEY")
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("waiting", result.stdout)
+        self.assertFalse(self.path.exists())
 
     def test_cancel_saves_nothing(self):
         self.path.write_text("EXISTING=keep\n")
@@ -191,13 +295,15 @@ class PrivateEntryTests(unittest.TestCase):
 
     def test_cli_browser_receipts_never_contain_values(self):
         process = subprocess.Popen([sys.executable, str(SCRIPT), "request", "--file", str(self.path),
-                                    "--ui", "browser", "--no-open", "--timeout", "5", "TEST_KEY"],
+                                    "--ui", "browser", "--no-open", "--timeout", "5", "TEST_KEY", "SECOND_KEY"],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             waiting_line = process.stdout.readline()
             waiting = json.loads(waiting_line)
             origin, token = waiting["url"].split("/#")
-            body = json.dumps({"values": {"TEST_KEY": DUMMY}}).encode()
+            self.assertEqual(waiting["names"], ["TEST_KEY", "SECOND_KEY"])
+            self.assertTrue(origin.startswith("http://127.0.0.1:"))
+            body = json.dumps({"values": {"TEST_KEY": DUMMY, "SECOND_KEY": "second"}}).encode()
             request = urllib.request.Request(origin + "/save", data=body,
                         headers={"Origin": origin, "X-Request-Token": token, "Content-Type": "application/json"})
             with urllib.request.urlopen(request, timeout=3) as response:
@@ -206,6 +312,7 @@ class PrivateEntryTests(unittest.TestCase):
             self.assertEqual(process.returncode, 0)
             self.assertEqual(json.loads(output)["status"], "saved")
             self.assertNotIn(DUMMY, waiting_line + output + error)
+            self.assertEqual(secret.env_values(self.path.read_text()), {"TEST_KEY": DUMMY, "SECOND_KEY": "second"})
         finally:
             if process.poll() is None:
                 process.kill()
@@ -236,6 +343,38 @@ class PrivateEntryTests(unittest.TestCase):
                 with self.assertRaises(exception) as raised:
                     secret.native_values(["TEST_KEY"], self.path, 10)
                 self.assertNotIn(DUMMY, str(raised.exception))
+
+    def test_single_value_on_local_mac_retains_native_default(self):
+        output = io.StringIO()
+        reply = subprocess.CompletedProcess([], 0, DUMMY + "\n", "")
+        with patch.object(secret.sys, "platform", "darwin"), \
+             patch.object(secret, "check_git", return_value=None), \
+             patch.object(secret.subprocess, "run", return_value=reply) as run, \
+             patch.object(secret, "tailnet_address") as tailnet, \
+             contextlib.redirect_stdout(output):
+            code = secret.main(["request", "--file", str(self.path), "TEST_KEY"])
+        self.assertEqual(code, 0)
+        self.assertEqual([call.args[0][2] for call in run.call_args_list], ["TEST_KEY"])
+        self.assertEqual(secret.env_values(self.path.read_text()), {"TEST_KEY": DUMMY})
+        self.assertNotIn(DUMMY, output.getvalue())
+        tailnet.assert_not_called()
+
+    def test_native_batch_is_rejected_before_ui_and_keeps_file_unchanged(self):
+        original = "TEST_KEY=old\nSECOND_KEY=old\n"
+        self.path.write_text(original)
+        output = io.StringIO()
+        with patch.object(secret.sys, "platform", "darwin"), \
+             patch.object(secret, "native_values") as native, \
+             contextlib.redirect_stdout(output):
+            code = secret.main(["request", "--file", str(self.path), "--ui", "native", "TEST_KEY", "SECOND_KEY"])
+        self.assertEqual(code, 2)
+        self.assertEqual(self.path.read_text(), original)
+        self.assertNotIn("waiting", output.getvalue())
+        native.assert_not_called()
+        with patch.object(secret.subprocess, "run") as run:
+            with self.assertRaises(secret.SafeError):
+                secret.native_values(["TEST_KEY", "SECOND_KEY"], self.path, 10)
+            run.assert_not_called()
 
     def test_multiline_existing_file_and_bad_names_fail_before_ui(self):
         self.path.write_text("TEST_KEY='line one\nline two'\n")

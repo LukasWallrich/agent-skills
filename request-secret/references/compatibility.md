@@ -68,7 +68,17 @@ so changes to those internal interfaces do not affect it.
 
 ## Browser handling
 
-The listener binds only to `127.0.0.1` on a random port. A per-request 256-bit token
+By default the listener binds only to `127.0.0.1` on a random port. Explicit
+`--tailnet` mode discovers the machine's current address with `tailscale ip -4`
+and binds only to that IPv4 address, never a wildcard or public interface. It
+refuses missing, invalid, or non-Tailscale-range addresses rather than falling
+back to wider exposure. Tailnet mode selects the browser UI and leaves opening
+the link to the user; it needs a working shared tailnet and access to that port.
+Local defaults do not depend on Tailscale. A single value on macOS uses a native
+dialog; two or more values use one browser form on every platform. Explicit
+`--ui native` is accepted only for a single value.
+
+A per-request 256-bit token
 is delivered in the URL fragment, used in a request header and removed from the
 visible URL on load. The server checks Host and Origin, disables request logging,
 uses `no-store` and `no-referrer`, and serves no third-party code. It accepts one
@@ -90,11 +100,18 @@ which windows scripts may close; see [Window.close](https://developer.mozilla.or
 Use a regular browser for real entry. T3 preview automation has tool/action history;
 inspecting form values or typing a real credential through an agent tool defeats
 the entry boundary. Browser extensions, devtools, OS clipboard managers and local
-debugging can also observe user input. Prefer the native dialog on a local Mac.
+debugging can also observe user input. Prefer the native dialog for a single value
+on a local Mac.
 
-Over SSH, the form and destination remain on the agent host. Forward the listener
-to the same loopback port on the user's machine through an existing authorized SSH
-connection. Do not publish the form or use a public preview proxy.
+On remote tailnet hosts, give the user the direct HTTP link after verifying the
+listener responds at its tailnet address. Tailscale encrypts network transport;
+the entry form has no HTTPS certificate of its own. Do not enable Funnel or use
+a public preview proxy. The listener shuts down after a save, cancellation or
+expiry, without permanent serving configuration or a separate reverse proxy.
+
+Over SSH without a shared tailnet, the form and destination remain on the agent
+host. Forward the default loopback listener to the same loopback port on the
+user's machine through an existing authorized SSH connection.
 
 ## Verification
 
@@ -106,7 +123,8 @@ python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py request-
 ```
 
 Tests exercise the real HTTP listener and subprocess CLI with dummy values. They
-cover receipts/output, file permissions, preservation, quoting, cancellation,
+cover batch entry and all-or-nothing saves, local defaults, tailnet address
+discovery/routing, receipts/output, file permissions, preservation, quoting, cancellation,
 expiry, replay, cross-origin/token rejection, tracked destinations (including
 nested paths), concurrent edits, and child-output suppression/redaction. Native
 dialog behavior uses mocked subprocess replies; compile the embedded AppleScript

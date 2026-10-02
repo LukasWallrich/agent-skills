@@ -1,6 +1,6 @@
 ---
 name: request-secret
-description: Request passwords, API keys or tokens through a private native dialog or localhost form and save them to an env file without putting their values in chat or tool output. Use when a task needs a missing credential, including Codex or Claude sessions in T3 Code.
+description: Request one or several passwords, API keys or tokens through a private native dialog, local browser form or tailnet form and save them together to an env file without putting values in chat or tool output. Use when a task needs missing credentials, including Codex or Claude sessions in T3 Code.
 ---
 
 # Request a secret
@@ -30,6 +30,18 @@ python3 <skill-root>/scripts/request_secret.py request \
   --file '/absolute/path/to/credentials.env' SERVICE_API_KEY
 ```
 
+For several credentials going to the same file, request them in one invocation:
+
+```sh
+python3 <skill-root>/scripts/request_secret.py request \
+  --file '/absolute/path/to/credentials.env' SERVICE_API_KEY SERVICE_API_SECRET
+```
+
+Supply up to 16 distinct variable names. Multiple values always use one browser
+form, including on macOS, and save together atomically. Native macOS dialogs are
+only for a single value; `--ui native` with several names is refused.
+For credentials with different destinations, use separate requests.
+
 Launch directly with the ordinary shell tool after reading this skill. Routine
 entry does not need tool discovery, helper-source inspection, or a separate path
 inventory. If a private parent directory needs creating or the credential-file
@@ -38,12 +50,13 @@ invocation. Use a short initial yield (about one second) so the dialog opens
 promptly and the request remains active; then wait on that same process for its
 receipt. Do not re-read this skill within the same conversation unless it changed.
 
-On a local Mac, this opens a native dialog with masked input and a Show/Hide
-button to check correctness. Show/Hide preserves the entered value and the request's
+For one value on a local Mac, this opens a native dialog with masked input and a
+Show/Hide button to check correctness. Show/Hide preserves the entered value and the request's
 original timeout. Elsewhere it opens a
-private browser form bound to `127.0.0.1`, and prints its temporary URL. Use
+private browser form bound to `127.0.0.1`, and prints its temporary URL; requests
+for several values also use this form on macOS. Use
 `--ui browser` to choose the form explicitly; `--no-open` leaves opening the URL
-to the user. Multiple names collect all values before one atomic save. Existing
+to the user. Remote tailnet entry is described below. Existing
 entries with those names are replaced; other entries are preserved. Cancel or
 timeout saves nothing. The default timeout is ten minutes. Each browser input also
 has a Show/Hide button; revealing changes only local display, not transcript output.
@@ -92,10 +105,31 @@ T3's browser tooling and history. For real browser entry, give the user the link
 to open directly instead of automating the form through T3's preview tools.
 
 The file is on the **agent's machine**. A native dialog requires that machine's
-desktop session. Over SSH use `--ui browser --no-open` and a user-authorized SSH
-port forward to the loopback port; open the form on the user's machine. Do not
-bind it to `0.0.0.0`, publish it, or expose it through a public preview/tunnel.
-Keep the local and forwarded port equal because the helper checks Host/Origin.
+desktop session. On a remote machine reachable through the user's tailnet,
+prefer a direct link:
+
+```sh
+python3 <skill-root>/scripts/request_secret.py request \
+  --file '/absolute/path/to/credentials.env' --tailnet SERVICE_API_KEY SERVICE_API_SECRET
+```
+
+`--tailnet` runs `tailscale ip -4`, binds only to that Tailscale IPv4 address on
+a random port, and prints an HTTP URL with the request token in its fragment.
+It selects browser entry even on macOS and does not open a browser on the remote
+host. Calls without `--tailnet` stay local and do not need Tailscale. The listener
+closes after save, cancellation or timeout.
+
+Verify the returned URL's origin responds (for example with `curl --noproxy '*'`
+without the fragment), then give the complete clickable URL to the user to open
+directly. Never submit a real value as part of verification. Keep the request
+process alive for the receipt. Do not require SSH forwarding or the built-in T3
+browser for this tailnet path; a blank T3 preview does not prove the form is broken.
+
+Tailnet HTTP relies on Tailscale's encrypted transport and access rules. Do not
+bind to `0.0.0.0`, enable Funnel, publish the form, or use a public preview/tunnel.
+If no shared tailnet is available, use `--ui browser --no-open` with an authorized
+SSH forward to the same loopback port on the user's machine; matching ports are
+required by Host/Origin checks.
 
 The saved file is plaintext with mode `0600`. This prevents accidental transcript
 entry through this workflow; it does not deny an agent or another process running

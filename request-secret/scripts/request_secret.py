@@ -6,6 +6,7 @@ import argparse
 import fcntl
 import html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -191,6 +192,8 @@ end run
 
 
 def native_values(names, path, timeout):
+    if len(names) != 1:
+        raise SafeError("Native entry accepts one value; use the browser form for multiple values.")
     deadline = time.monotonic() + timeout
     values = {}
     for name in names:
@@ -270,8 +273,20 @@ class FormServer(ThreadingHTTPServer):
         pass  # Never emit a traceback containing request/body data.
 
 
+def tailnet_address():
+    try:
+        result = subprocess.run(["tailscale", "ip", "-4"], capture_output=True,
+                                text=True, timeout=10)
+        address = ipaddress.IPv4Address(result.stdout.strip())
+        if result.returncode or address not in ipaddress.IPv4Network("100.64.0.0/10"):
+            raise ValueError()
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        raise SafeError("Tailnet entry requires a running Tailscale connection with an IPv4 address.") from None
+    return str(address)
+
+
 class FormRequest:
-    def __init__(self, names, path, original, timeout):
+    def __init__(self, names, path, original, timeout, bind_address="127.0.0.1"):
         self.names, self.path, self.original = names, path, original
         self.token, self.nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(18)
         self.deadline = time.monotonic() + timeout
@@ -354,8 +369,8 @@ class FormRequest:
                     except (ValueError, UnicodeError, SafeError, OSError):
                         self.respond(400, '{"message":"Could not save. Check the destination and supply non-empty single-line values."}')
 
-        self.server = FormServer(("127.0.0.1", 0), Handler)
-        self.host = f"127.0.0.1:{self.server.server_port}"
+        self.server = FormServer((bind_address, 0), Handler)
+        self.host = f"{bind_address}:{self.server.server_port}"
         self.origin = "http://" + self.host
         self.url = self.origin + "/#" + self.token
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -453,9 +468,11 @@ def main(argv=None):
         sub = subs.add_parser(action)
         sub.add_argument("--file", required=True)
         if action == "request":
-            sub.add_argument("names", nargs="+")
+            sub.add_argument("names", nargs="+", help="Variable names to collect and save together (up to 16)")
             sub.add_argument("--ui", choices=("auto", "native", "browser"), default="auto")
             sub.add_argument("--no-open", action="store_true")
+            sub.add_argument("--tailnet", action="store_true",
+                             help="Serve the browser form on this machine's Tailscale IPv4 address")
             sub.add_argument("--timeout", type=int, default=600)
         elif action == "run":
             sub.add_argument("--redact-output", action="store_true")
@@ -478,10 +495,16 @@ def main(argv=None):
             raise SafeError("Supply up to 16 distinct valid environment-variable names.")
         if not 1 <= args.timeout <= 3600:
             raise SafeError("Timeout must be between 1 and 3600 seconds.")
+        if args.tailnet and args.ui == "native":
+            raise SafeError("Tailnet entry uses the browser form; omit --ui native.")
+        if args.ui == "native" and len(args.names) != 1:
+            raise SafeError("Native entry accepts one value; use the browser form for multiple values.")
         check_git(path)
         original = read_private(path)
         env_values(original)  # Reject unsupported multiline/shell syntax before entry.
-        ui = args.ui if args.ui != "auto" else ("native" if sys.platform == "darwin" else "browser")
+        ui = ("browser" if args.tailnet else
+              args.ui if args.ui != "auto" else
+              "native" if sys.platform == "darwin" and len(args.names) == 1 else "browser")
         if ui == "native":
             if sys.platform != "darwin":
                 raise SafeError("Native input requires macOS. Use --ui browser.")
@@ -489,12 +512,13 @@ def main(argv=None):
             values = native_values(args.names, path, args.timeout)
             save(path, original, values)
         else:
-            request = FormRequest(args.names, path, original, args.timeout)
+            address = tailnet_address() if args.tailnet else "127.0.0.1"
+            request = FormRequest(args.names, path, original, args.timeout, bind_address=address)
             try:
                 url = request.start()
                 receipt("waiting", file=str(path), names=args.names, ui=ui, url=url,
                         timeout_seconds=args.timeout)
-                if not args.no_open:
+                if not args.no_open and not args.tailnet:
                     try:
                         webbrowser.open(url)
                     except Exception:
