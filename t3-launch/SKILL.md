@@ -27,19 +27,24 @@ Write the intended task to a UTF-8 prompt file under the current workspace's `wo
 
 Choose the model from the user's request or established preference; do not silently route a Codex request through OpenRouter. `--instance codex --model gpt-6.1-sol` selects GPT-6.1 Sol through the Codex subscription. Other configured provider instances can be selected explicitly; model IDs and reasoning options must match that instance. Omit `--effort` unless requested or established by context.
 
+Inherit the launching session's access permissions and existing user authorization. Always pass `--runtime-mode` matching the current session: `full-access` for unrestricted execution without approvals, `approval-required` for approval-gated execution, `auto-accept-edits` for automatic edit approval, or `auto` for classifier-approved actions. A full-access parent launches a full-access child without asking for permission again. Downscope only when the user requests it or a concrete task-specific reason warrants it; state that reason and pass the narrower mode explicitly. Preserve any additional task or tool restrictions in the prompt. The helper requires the mode because it cannot determine the caller's permissions from the local T3 server or authentication token.
+
+This example assumes the launching session has full access; substitute its actual mode when different:
+
 ```sh
 python3 <skill-root>/scripts/t3_launch.py launch '/absolute/project/path' \
   --title 'Compare deduplication methods' \
   --prompt-file '/absolute/work/prompt.txt' \
   --receipt '/absolute/work/t3-launch-receipt.json' \
-  --instance codex --model gpt-6.1-sol --effort high
+  --instance codex --model gpt-6.1-sol --effort high \
+  --runtime-mode full-access
 ```
 
-`launch` adds the project if needed, creates the thread, and starts its first turn. It uses the current checkout and records the current Git branch; it does not switch branches or pull updates itself. Permission mode defaults to `approval-required`. Pass `--runtime-mode full-access` only when the user's authorization or established session context supports that mode.
+`launch` adds the project if needed, creates the thread, and starts its first turn with the specified access mode. It uses the current checkout and records the current Git branch; it does not switch branches or pull updates itself.
 
 Keep the receipt: it reserves IDs before mutations and binds them to the project, title, model, mode and prompt hash. Re-running the identical command with the same receipt verifies the existing message without sending it again. Use a fresh receipt only for an intentionally new chat. Do not automatically use a fresh receipt after errors. If an outcome is uncertain, inspect the recorded thread before proceeding; the helper stops instead of resending.
 
-Output verifies the project, stored model and user message, counts user messages in the new chat’s latest turn, and reports turn/session state. `starting` means the prompt was accepted and the provider is starting; it is not task completion. Report that accurately. The helper does not focus the chat window. Use computer use only if UI navigation is also needed or the installed API has changed and cannot be adapted from source.
+Output verifies the project, stored model, access mode and user message, counts user messages in the new chat’s latest turn, and reports turn/session state. `starting` means the prompt was accepted and the provider is starting; it is not task completion. Report that accurately. The helper does not focus the chat window. Use computer use only if UI navigation is also needed or the installed API has changed and cannot be adapted from source.
 
 For a later status check without sending anything:
 

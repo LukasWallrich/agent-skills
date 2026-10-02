@@ -152,8 +152,9 @@ def launch(client, args, root, project):
         receipt['state'] = 'created'
         receipt_path.write_text(json.dumps(receipt, indent=2))
     detail = client.thread(receipt['threadId'])
-    if detail['projectId'] != project['id'] or detail['modelSelection'] != selection:
-        raise RuntimeError('Stored project or model differs from the request; inspect thread.')
+    if (detail['projectId'] != project['id'] or detail['modelSelection'] != selection
+            or detail['runtimeMode'] != args.runtime_mode):
+        raise RuntimeError('Stored project, model or access mode differs from the request; inspect thread.')
     if not any(m['id'] == receipt['messageId'] for m in detail['messages']):
         if detail['messages'] or receipt['state'] not in ('creating', 'created'):
             raise RuntimeError('Unexpected thread state or uncertain dispatch; inspect before retrying.')
@@ -169,14 +170,15 @@ def launch(client, args, root, project):
         detail = client.thread(receipt['threadId'])
         if not any(m['id'] == receipt['messageId'] for m in detail['messages']):
             raise RuntimeError('Dispatch returned but message is not visible; inspect before retrying.')
-    if detail['modelSelection'] != selection:
-        raise RuntimeError('Stored model selection differs from the request; inspect thread.')
+    if detail['modelSelection'] != selection or detail['runtimeMode'] != args.runtime_mode:
+        raise RuntimeError('Stored model or access mode differs from the request; inspect thread.')
     receipt['state'] = 'verified'
     receipt_path.write_text(json.dumps(receipt, indent=2))
     turn = detail.get('latestTurn') or {}
     session = detail.get('session') or {}
     return {'threadId': receipt['threadId'], 'title': detail['title'],
-            'modelSelection': detail['modelSelection'], 'messageVerified': True,
+            'modelSelection': detail['modelSelection'], 'runtimeMode': detail['runtimeMode'],
+            'messageVerified': True,
             'userMessageCount': sum(m['role'] == 'user' for m in detail['messages']),
             'turnState': turn.get('state'), 'sessionStatus': session.get('status'),
             'receipt': str(receipt_path)}
@@ -202,7 +204,7 @@ def main():
             sub.add_argument('--instance', default='codex')
             sub.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
             sub.add_argument('--runtime-mode', choices=['approval-required', 'auto-accept-edits', 'auto', 'full-access'],
-                             default='approval-required')
+                             required=True, help='Current session access mode; inherit it unless explicitly downscoping.')
     args = parser.parse_args()
     root = None
     if args.action != 'inspect':
@@ -218,6 +220,7 @@ def main():
                 detail = client.thread(args.thread_id)
                 print(json.dumps({'threadId': detail['id'], 'title': detail['title'],
                                   'modelSelection': detail['modelSelection'],
+                                  'runtimeMode': detail['runtimeMode'],
                                   'latestTurn': detail.get('latestTurn'),
                                   'sessionStatus': (detail.get('session') or {}).get('status'),
                                   'lastError': (detail.get('session') or {}).get('lastError'),
