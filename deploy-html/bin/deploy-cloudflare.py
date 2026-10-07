@@ -22,7 +22,10 @@ DEFAULT_STATE = Path.home() / '.config/deploy-html'
 
 
 def fetch(url: str, token: str = '') -> bytes:
-    request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token} if token else {})
+    headers = {'User-Agent': 'deploy-html/1.0'}
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=30) as response:
         return response.read()
 
