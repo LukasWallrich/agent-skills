@@ -60,7 +60,10 @@ Private configuration/state lives at `~/.config/deploy-html/`:
 - `previous-site/`: previous asset tree; `deploy.lock` serializes local publications.
 
 Use **request-secret** to collect missing credentials privately. An account-scoped
-Edit Cloudflare Workers token and an enabled workers.dev subdomain are required.
+token with `Workers Scripts: Edit` and `Account Settings: Read`, scoped to the
+chosen account, and an enabled workers.dev subdomain are required. If the dashboard
+uses granular roles, initial creation needs Workers product Admin; subsequent
+deployments can use Editor. No zone permissions are needed for workers.dev hosting.
 Install the CLI once, then use the installed version without downloading on each run:
 
 ```sh
