@@ -1,82 +1,81 @@
 ---
 name: deploy-html
-description: Publish a standalone HTML document (report, plan, findings, mock) to a live public URL on surge.sh, normally with the html-comments review layer switched on. Use only when the user asks for it to be deployed, published, put online, or given a link for OTHER people. Not for a throwaway / local / single-reviewer markup (that is html-comments local mode, no upload), not for a full website, and not for HTML shipped to users.
+description: Publish a standalone HTML report, plan, findings page, or mock to a public URL using Cloudflare Workers Static Assets, normally with the html-comments review layer. Use when the user explicitly asks to deploy, publish, put online, or give others a link. Use local or tailnet hosting for private previews; this skill is not for a full website. Honor an explicitly chosen hosting provider.
 ---
 
-# Deploy HTML — one command to a live, commentable URL
+# Publish an HTML report
+
+Default to **Cloudflare Workers Static Assets**. One persistent site serves reports at
+`https://lukas-reports.<account-subdomain>.workers.dev/<slug>/`, with an index at `/`.
+Static assets do not require Worker code. Keep Surge as an explicit fallback;
+use GitHub Pages for a project's existing published site when appropriate.
 
 ```sh
-~/.claude/skills/deploy-html/bin/deploy-doc.sh report.html
+~/.codex/skills/deploy-html/bin/deploy-doc.sh ./clean-report-folder --slug flora-screening-audit
 ```
 
-That stages a copy of the file, injects the html-comments overlay, checks for collisions,
-deploys to `https://report.surge.sh/`, verifies the page came back, and prints the URL plus
-the teardown command. **The source file is never modified.**
+Pass a clean directory containing `index.html` and its linked downloads/assets.
+For a self-contained document, pass the HTML file instead. The source is unchanged.
+Do not pass a project checkout: the whole supplied folder is uploaded. Hidden files
+and symlinks are rejected. Check that the staging folder contains only intended
+public material, including downloads. Link DOIs, issues, PRs, and other resolvable identifiers.
 
-## Writing the page
-
-Link identifiers wherever they resolve — DOIs as `https://doi.org/…`, GitHub issues, PRs and
-commit hashes, ticket ids, dataset accessions. A reader should be able to click through
-rather than paste a string into a search box.
-
-## Which host
-
-**surge.sh for anything short-lived** — a draft under review, a findings page, a handover
-note, a mock. One command, no repo, no commit, a subdomain per document, and
-`surge teardown <domain>` when it has served its purpose.
-
-**GitHub Pages for things that should last** — a project's own published site, or a page
-worth keeping and indexing. For one-off pages that still want a permanent home, that is
-`openclaw_projects` (one folder per page, plus an index card in the same commit).
-
-Both are public-by-URL, as is the comment endpoint. Nothing confidential, no participant
-data, no unpublished manuscript text goes to either.
+The helper injects the review layer, checks document and comment collisions,
+claims the comment slug, deploys, and verifies the **exact new HTML bytes** over HTTPS.
+Share the verified URL and check relevant linked downloads before finishing.
 
 ## Options
 
-| | |
+| Option | Effect |
 |---|---|
-| `--slug <slug>` | comment-tab slug; also the default subdomain. Defaults to the filename. |
-| `--domain <host>` | deploy target, default `<slug>.surge.sh`. |
-| `--no-comments` | deploy without the review layer. |
-| `--dry-run` | print the plan, upload nothing. |
-| `--force` | skip the collision checks. Needed the first time you redeploy over a page that predates this script. |
+| `--slug <slug>` | Descriptive report path and comment slug. Defaults to the filename. |
+| `--no-comments` | Omit injection of the review layer. |
+| `--dry-run` | Stage and validate offline; upload and claim nothing. |
+| `--migrate-from <url>` | Move this same marked report from another host, retaining its comment slug and reservation. |
+| `--state-dir <path>` | Use a separate managed site state/configuration. |
+| `--provider surge` | Use the original Surge helper, supporting `--domain`, `--force`, and its original options. |
 
-Pass a **directory** rather than a file when the page is not self-contained; it must contain
-`index.html`. Given a lone file that references relative assets results in a warning.
+## Report identity and migration
 
-## Choosing the slug
+One comment slug identifies one document, forever. Choose a content-specific slug;
+`report`, `draft`, and `index` are poor defaults. Keep the same slug for the same
+review round. Use a new slug for a separately reviewed revision.
 
-The slug names the Google Sheet tab that holds the page's comments (unless --no-comments is specified), so **one slug ↔ one
-document, forever**. Defaults come from the filename, which can cause collissions: 
-`report.html`, `draft.html` and `index.html` are not names, they are placeholders.
-Derive the slug from the content instead (`zcurve-predictive-accuracy`,
-`flora-screening-audit`), and state it to the user.
+The Cloudflare helper refuses a source carrying another slug or an unrecognized live
+path. For migration, `--migrate-from` verifies that the old page carries the same
+`hc-doc` marker. Its existing comment reservation remains associated with the old URL;
+the new report uses the same comment tab. The helper records that reservation locally
+for future updates. Do not release a reservation or use a fresh comment slug merely
+because the host changes. Keep the old link available unless removal was requested.
 
-A revised version you want reviewed **separately** needs a new slug (`-v2`); comments do not
-migrate. A revised version of the **same** review round keeps its slug — just re-run the
-command, and the existing comments stay attached.
+## Machine setup
 
-## What it refuses, and why not to force it
+Private configuration/state lives at `~/.config/deploy-html/`:
 
-Three things are checked before anything uploads, because none of them can be undone:
+- `config.json`: optional `worker_name` (default `lukas-reports`), `credentials_file`;
+  the helper records `base_url` after deployment.
+- `cloudflare.env`: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (mode 0600).
+- `tools/`: locally installed Wrangler and its lockfile.
+- `site/`: complete published asset tree; every deployment preserves sibling reports.
+- `previous-site/`: previous asset tree; `deploy.lock` serializes local publications.
 
-1. **The domain already serves a different document.** Deploying would destroy it.
-2. **The slug belongs to another document** — registered to a different URL, or already
-   carrying comments. Two documents on one tab corrupts both
-   sets of comments — each page tries to anchor the other's comments into text it does not
-   contain. This check is `html-comments/bin/check-slug.sh`, the same script used when a slug
-   is embedded by hand, so both routes apply one rule. A deploy also *claims* the slug, so
-   the name is reserved from the moment the page is live, not from its first comment.
-3. **The domain is live but carries no marker** (deployed before this script, or by
-   something else). It cannot be shown to be the same document, so it is not assumed.
+Use **request-secret** to collect missing credentials privately. An account-scoped
+Edit Cloudflare Workers token and an enabled workers.dev subdomain are required.
+Install the CLI once, then use the installed version without downloading on each run:
 
-For 1 and 2 the answer is a fresh slug, not `--force`. For 3, look at the page and force it
-if it is yours.
+```sh
+npm install --prefix ~/.config/deploy-html/tools wrangler@4 --no-audit --no-fund
+```
 
-## Setup
+The review layer reads `~/.claude/html-comments.config.json`; the sibling
+**html-comments** and **request-secret** skills must be installed. Use **review-comments**
+to read feedback. The Surge fallback requires the Surge CLI.
 
-Reads `~/.claude/html-comments.config.json` (endpoint + asset host) and needs the `surge`
-CLI on PATH. Both should be on this machine. See the **html-comments** skill for the config and for
-enabling the layer on Quarto or local `file://` pages, and **review-comments** for reading the
-collected comments back and applying them to the source.
+The local asset tree is authoritative: publish this shared site from this machine,
+or transfer its complete state before changing machines. Do not edit the same Worker
+outside this helper: a later upload replaces its full asset manifest. The previous
+snapshot is retained for recovery; an upload that succeeds is saved locally even if
+edge verification fails. A failed CLI deployment does not replace local site state.
+
+Cloudflare documentation: [static assets](https://developers.cloudflare.com/workers/static-assets/),
+[authorization](https://developers.cloudflare.com/workers/authorization/).
