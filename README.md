@@ -116,6 +116,15 @@ T3 Code desktop app on macOS or local server on Linux. The API is internal and m
 
 Symlink `t3-launch` into `~/.claude/skills/` or `~/.codex/skills/`.
 
+### `gh-pr-media`
+
+Puts screenshots and videos into GitHub PRs, issues and comments with `gh --attach`
+(gh 2.101+). The files are uploaded to GitHub's own attachment storage, as with
+drag-and-drop in the web editor. `--attach` needs write access to the repository. Without
+it, for example on a PR from a fork, the skill falls back to an orphan branch on your fork.
+
+Symlink `gh-pr-media` into `~/.claude/skills/` or `~/.codex/skills/`.
+
 ## Licence
 
 MIT.
