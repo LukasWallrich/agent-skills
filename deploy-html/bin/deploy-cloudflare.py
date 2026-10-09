@@ -147,7 +147,7 @@ def main() -> None:
             records[slug] = {'url': url, 'reservation_url': reservation or url}
             (stage / 'reports.json').write_text(json.dumps(records, indent=2) + '\n')
             cards = ''.join(f'<li><a href="/{html.escape(s)}/">{html.escape(s)}</a></li>' for s in sorted(records))
-            (stage / 'index.html').write_text('<!doctype html><html><head><meta charset="utf-8"><title>Reports</title></head><body><h1>Reports</h1><ul>' + cards + '</ul></body></html>')
+            (stage / 'index.html').write_text('<!doctype html><html><head><meta charset="utf-8"><title>Reports</title><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E📚%3C/text%3E%3C/svg%3E"></head><body><h1>Reports</h1><ul>' + cards + '</ul></body></html>')
             wrangler = Path(tmp) / 'wrangler.json'
             wrangler.write_text(json.dumps({'name': worker, 'account_id': account, 'compatibility_date': '2026-10-07', 'workers_dev': True, 'assets': {'directory': str(stage), 'not_found_handling': '404-page'}}))
             env['WRANGLER_SEND_METRICS'] = 'false'
