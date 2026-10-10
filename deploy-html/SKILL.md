@@ -20,6 +20,18 @@ Do not pass a project checkout: the whole supplied folder is uploaded. Hidden fi
 and symlinks are rejected. Check that the staging folder contains only intended
 public material, including downloads. Link DOIs, issues, PRs, and other resolvable identifiers.
 
+Before publishing, include a distinct, subject-relevant emoji favicon in the
+document's `<head>`. Choose an emoji that distinguishes this report from other
+reports likely to be open alongside it, and retain it when updating the same report.
+Use an SVG data URI so the favicon needs no separate asset, for example:
+
+```html
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🔬%3C/text%3E%3C/svg%3E">
+```
+
+Replace the example emoji with the report's chosen emoji and verify that the
+published HTML retains the favicon link.
+
 The helper injects the review layer, checks document and comment collisions,
 claims the comment slug, deploys, and verifies the **exact new HTML bytes** over HTTPS.
 Share the verified URL and check relevant linked downloads before finishing.
