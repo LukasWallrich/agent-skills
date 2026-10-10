@@ -7,7 +7,9 @@ description: Publish a standalone HTML report, plan, findings page, or mock to a
 
 Default to **Cloudflare Workers Static Assets**. One persistent site serves reports at
 `https://lukas-reports.<account-subdomain>.workers.dev/<slug>/`, with an index at `/`.
-Static assets do not require Worker code. Keep Surge as an explicit fallback;
+Static assets do not require Worker code. Any configured machine can publish: the
+site's file tree lives in a private git repository, and a publish commits one report
+to it, pushes, and deploys the pushed tree. Keep Surge as an explicit fallback;
 use GitHub Pages for a project's existing published site when appropriate.
 
 ```sh
@@ -42,7 +44,8 @@ Share the verified URL and check relevant linked downloads before finishing.
 |---|---|
 | `--slug <slug>` | Descriptive report path and comment slug. Defaults to the filename. |
 | `--no-comments` | Omit injection of the review layer. |
-| `--dry-run` | Stage and validate offline; upload and claim nothing. |
+| `--dry-run` | Stage and validate against the local checkout; claim, push and upload nothing. |
+| `--delete <slug>` | Remove a published report (no source argument). Its slug stays reserved and cannot be reused. |
 | `--migrate-from <url>` | Move this same marked report from another host, retaining its comment slug and reservation. |
 | `--state-dir <path>` | Use a separate managed site state/configuration. |
 | `--provider surge` | Use the original Surge helper, supporting `--domain`, `--force`, and its original options. |
@@ -56,20 +59,25 @@ review round. Use a new slug for a separately reviewed revision.
 The Cloudflare helper refuses a source carrying another slug or an unrecognized live
 path. For migration, `--migrate-from` verifies that the old page carries the same
 `hc-doc` marker. Its existing comment reservation remains associated with the old URL;
-the new report uses the same comment tab. The helper records that reservation locally
-for future updates. Do not release a reservation or use a fresh comment slug merely
+the new report uses the same comment tab. The helper records that reservation in the
+site repository for future updates. Do not release a reservation or use a fresh comment slug merely
 because the host changes. Keep the old link available unless removal was requested.
 
 ## Machine setup
 
-Private configuration/state lives at `~/.config/deploy-html/`:
+Each publishing machine keeps private configuration at `~/.config/deploy-html/`:
 
-- `config.json`: optional `worker_name` (default `lukas-reports`), `credentials_file`;
-  the helper records `base_url` after deployment.
+- `config.json`: `site_repo` (git URL of the shared site tree, required), optional
+  `worker_name` (default `lukas-reports`) and `credentials_file`; the helper records
+  `base_url` after deployment.
 - `cloudflare.env`: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (mode 0600).
 - `tools/`: locally installed Wrangler and its lockfile.
-- `site/`: complete published asset tree; every deployment preserves sibling reports.
-- `previous-site/`: previous asset tree; `deploy.lock` serializes local publications.
+- `repo/`: a checkout of the site repository. It is a cache that every publish resets
+  to the remote; `deploy.lock` serializes publications on one machine.
+
+The site repository holds `site/<slug>/` for each report, `site/reports.json` (the
+registry, including removed slugs) and the generated `site/index.html`. The machine
+needs git credentials that can push to it.
 
 Use **request-secret** to collect missing credentials privately. An account-scoped
 token with `Workers Scripts: Edit` and `Account Settings: Read`, scoped to the
@@ -86,11 +94,15 @@ The review layer reads `~/.claude/html-comments.config.json`; the sibling
 **html-comments** and **request-secret** skills must be installed. Use **review-comments**
 to read feedback. The Surge fallback requires the Surge CLI.
 
-The local asset tree is authoritative: publish this shared site from this machine,
-or transfer its complete state before changing machines. Do not edit the same Worker
-outside this helper: a later upload replaces its full asset manifest. The previous
-snapshot is retained for recovery; an upload that succeeds is saved locally even if
-edge verification fails. A failed CLI deployment does not replace local site state.
+The site repository is authoritative. Every upload replaces the Worker's full asset
+manifest, so do not deploy to the same Worker outside this helper and do not edit
+`site/` by hand. If another machine pushed first, the helper takes its tree and
+re-applies the one report; after uploading it fetches again and uploads once more if
+the repository moved, so the newest tree ends up live. The helper refuses to deploy a
+tree in which a listed report has no page or a folder is not listed. If the upload
+fails after the push, the change stays in the repository and goes live with the next
+successful publish from any machine. Earlier versions of every report are in the
+repository's history.
 
 Cloudflare documentation: [static assets](https://developers.cloudflare.com/workers/static-assets/),
 [authorization](https://developers.cloudflare.com/workers/authorization/).
