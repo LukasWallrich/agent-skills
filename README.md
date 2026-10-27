@@ -67,7 +67,8 @@ and writes into your Google Sheet, so don't point it at someone else's.
 Downloads academic PDFs by DOI for claim verification: local cache, then the
 [`fetchpdf`](https://github.com/The-Metascience-Observatory/fetchpdf) open-access chain
 (OpenAlex, Unpaywall, PubMed Central, Crossref links, preprint servers, repositories,
-publisher routes), then Google Scholar via SerpAPI, then your own running, signed-in Chrome
+publisher routes), then a free web search for author copies (`ddgs`: `<DOI> pdf`, then the
+quoted title), then Google Scholar via SerpAPI, then your own running, signed-in Chrome
 for whatever is paywalled. Every downloaded PDF is checked against the requested DOI, title
 and page range, so a topically-similar paper or a first-page preview is rejected and the
 search continues rather than being cached under the wrong DOI.

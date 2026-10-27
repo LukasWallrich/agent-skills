@@ -1,4 +1,4 @@
-"""The Google Scholar and Chrome candidate loops, with network and Chrome mocked.
+"""The web-search, Google Scholar and Chrome candidate loops, with network and Chrome mocked.
 
 Run with:
     cd /Users/lukaswallrich/Documents/Coding/agent-skills/download-paper && \
@@ -49,7 +49,7 @@ def scholar(monkeypatch):
 
 def test_walks_past_a_wrong_paper_to_the_right_one(scholar, tmp_path):
     tmp = str(tmp_path / "part.pdf")
-    accepted, blocked, wrong = dp.scholar_download(
+    accepted, blocked, wrong = dp.walk_pdf_links(
         [BLOCKED_URL, WRONG_URL, RIGHT_URL], tmp, "10.1/x", "A Title", "1-9")
 
     assert accepted == RIGHT_URL
@@ -61,13 +61,128 @@ def test_walks_past_a_wrong_paper_to_the_right_one(scholar, tmp_path):
 
 def test_no_right_paper_leaves_nothing_behind(scholar, tmp_path):
     tmp = str(tmp_path / "part.pdf")
-    accepted, blocked, wrong = dp.scholar_download(
+    accepted, blocked, wrong = dp.walk_pdf_links(
         [WRONG_URL, BLOCKED_URL], tmp, "10.1/x", "A Title", "1-9")
 
     assert accepted is None
     assert blocked == [BLOCKED_URL]
     assert wrong == [WRONG_URL]
     assert not os.path.exists(tmp)
+
+
+# --- Step W: web search, with ddgs and the network mocked ------------------
+
+TITLE = "Intergroup Contact and Prejudice: A Meta-Analysis"
+
+
+@pytest.mark.parametrize("result_title, ok", [
+    ("PDF Intergroup Contact and Prejudice: A Meta-Analysis", True),
+    ("(PDF) Intergroup Contact and Prejudice: A Meta ...", True),
+    ("Intergroup Contact and Prejudice: A Meta-Analysis - Uni Repository", True),
+    ("PDF Intergroup Contact and Prejudice", True),
+    ("PDF Introduction", False),
+    ("PDF Contact and Prejudice Revisited", False),
+    ("", False),
+])
+def test_web_title_match(result_title, ok):
+    assert dp.web_title_match(result_title, TITLE) is ok
+
+
+def test_web_pdf_links_keep_matched_pdfs_only():
+    results = [{"title": f"PDF {TITLE}", "href": "https://a.edu/slides/x.pdf"},
+               {"title": f"PDF {TITLE}", "href": "https://a.edu/landing"},
+               {"title": "PDF Something Else Entirely Here", "href": "https://b.edu/y.pdf"},
+               {"title": f"{TITLE} ...", "href": "https://a.edu/slides/x.pdf"}]
+    assert dp.web_pdf_links(results, TITLE) == ["https://a.edu/slides/x.pdf"]
+
+
+def test_web_search_failure_counts_as_no_results(monkeypatch, tmp_path):
+    class Broken:
+        def __init__(self, *a, **k):
+            raise RuntimeError("202 Ratelimit")
+
+    monkeypatch.setitem(sys.modules, "ddgs", type(sys)("ddgs"))
+    sys.modules["ddgs"].DDGS = Broken
+    assert dp.web_search("10.1/x pdf", str(tmp_path)) == []
+    # A failed search is not cached, so the next run searches again.
+    assert not [f for f in os.listdir(tmp_path / "web-search") if f.endswith(".json")]
+
+
+def test_web_search_results_are_cached(monkeypatch, tmp_path):
+    calls = []
+
+    class Fake:
+        def __init__(self, *a, **k):
+            pass
+
+        def text(self, query, max_results):
+            calls.append(query)
+            return [{"title": TITLE, "href": "https://a.edu/x.pdf", "body": "..."}]
+
+    monkeypatch.setitem(sys.modules, "ddgs", type(sys)("ddgs"))
+    sys.modules["ddgs"].DDGS = Fake
+    monkeypatch.setattr(dp, "WEB_SEARCH_SPACING", 0)
+    first = dp.web_search("10.1/x pdf", str(tmp_path))
+    assert dp.web_search("10.1/x pdf", str(tmp_path)) == first
+    assert calls == ["10.1/x pdf"]
+
+
+DRAFT_URL = "https://a.edu/draft.pdf"
+AUTHOR_URL = "https://b.edu/~author/paper.pdf"
+
+
+@pytest.fixture
+def web(monkeypatch):
+    """Canned searches: the DOI query finds a draft, the title query the paper."""
+    searches = {"10.1/x pdf": [{"title": f"PDF {TITLE}", "href": DRAFT_URL}],
+                f'"{TITLE}" pdf': [{"title": f"PDF {TITLE}", "href": DRAFT_URL},
+                                   {"title": TITLE, "href": AUTHOR_URL}]}
+    monkeypatch.setattr(dp, "web_search", lambda q, cache_dir: searches.get(q, []))
+    seen = []
+
+    def fake_fetch(url, timeout=60, accept=None):
+        seen.append(url)
+        return PDF
+
+    monkeypatch.setattr(dp, "fetch_url", fake_fetch)
+    verdicts = {DRAFT_URL: Verdict(False, "wrong_article"),
+                AUTHOR_URL: Verdict(True, "verified")}
+    monkeypatch.setattr(dp, "verify_identity",
+                        lambda path, doi, title, pages: verdicts[seen[-1]])
+    return seen
+
+
+def test_web_skips_a_draft_and_falls_back_to_the_title_query(web, tmp_path):
+    tmp = str(tmp_path / "part.pdf")
+    accepted, blocked = dp.web_download("10.1/x", TITLE, tmp, "1-9", str(tmp_path))
+
+    assert accepted == AUTHOR_URL
+    assert web == [DRAFT_URL, AUTHOR_URL]       # the draft is not downloaded twice
+    assert dp.validate_pdf(tmp)
+
+
+def test_web_finds_nothing_when_search_is_down(monkeypatch, tmp_path):
+    monkeypatch.setattr(dp, "web_search", lambda q, cache_dir: [])
+    monkeypatch.setattr(dp, "fetch_url", lambda *a, **k: pytest.fail("nothing to fetch"))
+    tmp = str(tmp_path / "part.pdf")
+
+    assert dp.web_download("10.1/x", TITLE, tmp, "1-9", str(tmp_path)) == (None, [])
+    assert not os.path.exists(tmp)
+
+
+def test_chain_continues_to_scholar_after_an_empty_web_search(monkeypatch, tmp_path):
+    monkeypatch.setattr(dp, "crossref_metadata", lambda doi: {"title": TITLE, "search_title": TITLE, "pages": "1-9"})
+    monkeypatch.setattr(dp, "fetchpdf_download", lambda *a: False)
+    monkeypatch.setattr(dp, "web_search", lambda q, cache_dir: [])
+    monkeypatch.setattr(dp, "load_key_file", lambda: {"SERPAPI_API_KEY": "k"})
+    monkeypatch.setattr(dp, "scholar_pdf_links", lambda q, keys: [RIGHT_URL])
+    monkeypatch.setattr(dp, "fetch_url", lambda *a, **k: PDF)
+    monkeypatch.setattr(dp, "verify_identity", lambda *a: Verdict(True, "verified"))
+
+    path, _ = dp.download_paper("10.1/x", cache_dir=str(tmp_path), use_browser=False)
+
+    assert path == dp.doi_to_cache_path("10.1/x", str(tmp_path))
+    assert dp.validate_pdf(path)
 
 
 # --- Step C: the Chrome walk, with the whole Chrome layer mocked -------------

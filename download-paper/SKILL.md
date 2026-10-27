@@ -15,8 +15,8 @@ PDF_PATH=$($SKILL_DIR/download_paper.py --doi "DOI_HERE" 2>/tmp/download_paper.l
 ```
 
 Run the script directly — its shebang is `uv run --script`, which installs
-[`fetchpdf`](https://github.com/The-Metascience-Observatory/fetchpdf) into a managed
-environment on first use (a few seconds); later runs reuse uv's cache. The fetchpdf version
+[`fetchpdf`](https://github.com/The-Metascience-Observatory/fetchpdf) and `ddgs` into a
+managed environment on first use (a few seconds); later runs reuse uv's cache. The fetchpdf version
 is pinned to a commit hash in the script's `# dependencies` header; edit that hash to update.
 
 Sources, in order:
@@ -25,8 +25,15 @@ Sources, in order:
 2. The fetchpdf open-access chain: OpenAlex, Unpaywall, PubMed Central, Europe PMC,
    Crossref links, Semantic Scholar, arXiv and other preprint servers, repository
    landing pages, publisher routes
-3. Google Scholar via SerpAPI
-4. The user's running, signed-in Chrome — one throwaway tab walks the Scholar links plain
+3. Web search — the `ddgs` package (DuckDuckGo and other engines) for `<DOI> pdf`, then
+   `"<title>" pdf`. Finds author homepages, course pages and untagged institutional
+   repositories that the open-access indexes miss. Only `.pdf` links whose result title
+   matches the paper's title are downloaded (at most 5 per query). It is free, so it runs
+   before the SerpAPI quota is spent. `ddgs` scrapes search engines; a rate limit or
+   failure only means this step found nothing, and the walk carries on. Searches are spaced
+   ≥ 1.5 s apart across runs, and non-empty results are cached for a week.
+4. Google Scholar via SerpAPI
+5. The user's running, signed-in Chrome — one throwaway tab walks the Scholar links plain
    HTTP could not fetch, then the publisher's own PDF URLs (canonical URL by DOI prefix,
    `citation_pdf_url` from the landing page, ScienceDirect `/pdfft`), then EBSCOhost
 
@@ -68,6 +75,8 @@ The script lists its candidate URLs on stderr, each with a note:
 
 1. `[Scholar link, no PDF by plain HTTP]` — a PDF link Google Scholar offered that returned
    403, a bot check, or a landing page. The Chrome step tries these first when it runs.
+   `[web-search link, no PDF by plain HTTP]` is the same for a title-matched web-search hit,
+   which is not yet known to be this paper.
 2. `[Scholar link, a different paper]` — fetched, but not this DOI's paper. Skip it.
 3. `[publisher page]` — `https://doi.org/DOI_HERE`, which honours institutional access
 
@@ -167,3 +176,5 @@ Keys are read from the environment, then from `~/.claude/api_keys.env`.
 ## Cache
 
 Downloaded PDFs are cached in `~/.claude/cache/pdfs/` (MD5 of DOI). Use `--force` to re-download.
+Web-search results live in `~/.claude/cache/pdfs/web-search/` (MD5 of the query) for a week;
+delete that folder to search afresh.

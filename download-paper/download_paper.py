@@ -4,18 +4,24 @@
 # dependencies = [
 #   "fetchpdf @ git+https://github.com/The-Metascience-Observatory/fetchpdf@82a4c474178a3e4245da82542c3a25434674e48e",
 #   "requests",
+#   "ddgs",
 # ]
 # ///
 """Download an academic PDF by DOI, and check that it is that DOI's paper.
 
-Three steps:
+Four steps:
   A. `fetchpdf.fetch_pdf` — the open-access chain (OpenAlex, Unpaywall, PMC,
      Crossref links, preprint servers, repository landing pages, publisher
      routes). Every PDF it writes is checked against the requested record.
-  B. Google Scholar via SerpAPI, when step A found nothing and
+  W. A web search (the `ddgs` package, DuckDuckGo and other engines) for
+     "<DOI> pdf", then '"<title>" pdf', when step A found nothing. It finds
+     author homepages, course pages and untagged repositories. PDF links whose
+     result title matches the paper are downloaded and kept only if the identity
+     check passes. A blocked or failed search just means this step found nothing.
+  B. Google Scholar via SerpAPI, when steps A and W found nothing and
      a SerpAPI key is available. Each PDF link is downloaded and accepted only if
      fetchpdf's identity check says it is the requested paper.
-  C. The user's running, signed-in Chrome (macOS), when steps A and B found
+  C. The user's running, signed-in Chrome (macOS), when steps A, W and B found
      nothing. One throwaway tab walks the Scholar links plain HTTP could not
      fetch, then the publisher's own PDF URLs, then EBSCOhost. `--no-browser`
      skips it.
@@ -34,6 +40,7 @@ import re
 import ssl
 import sys
 import tempfile
+import time
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
@@ -47,6 +54,10 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 SCHOLAR_RESULTS = 5
+WEB_RESULTS = 30            # results per web search
+WEB_MAX_PDFS = 5            # title-matched PDF links downloaded per query
+WEB_SEARCH_SPACING = 1.5    # seconds between web searches, across runs
+WEB_CACHE_DAYS = 7
 KEY_FILE = os.path.expanduser("~/.claude/api_keys.env")
 #: fetchpdf's names for keys the key file holds under other names.
 FETCHPDF_KEY_NAMES = {"COREAPIKEY": "CORE_API_KEY",
@@ -226,8 +237,8 @@ def scholar_pdf_links(query, api_keys):
     return list(dict.fromkeys(links))
 
 
-def scholar_download(links, tmp_path, doi, title, pages):
-    """Walk the Scholar links, keeping the first that is the requested paper.
+def walk_pdf_links(links, tmp_path, doi, title, pages, label="Scholar"):
+    """Walk PDF links, keeping the first that is the requested paper.
 
     Returns (accepted_url, blocked_urls, wrong_urls). `blocked` are links that
     did not yield PDF bytes (403, bot-check HTML, a landing page) — candidates
@@ -235,7 +246,7 @@ def scholar_download(links, tmp_path, doi, title, pages):
     """
     blocked, wrong = [], []
     for url in links:
-        log(f"  Scholar candidate: {url}")
+        log(f"  {label} candidate: {url}")
         body = fetch_url(url)
         if not body or not body.startswith(b"%PDF-") or len(body) < 1000:
             blocked.append(url)
@@ -250,6 +261,99 @@ def scholar_download(links, tmp_path, doi, title, pages):
         wrong.append(url)
         os.unlink(tmp_path)
     return None, blocked, wrong
+
+
+# =============================================================================
+# Step W: web search (ddgs)
+# =============================================================================
+
+def normalise_title(text):
+    """Lowercase words only, minus the "PDF" tags and "..." truncation search
+    engines put on result titles."""
+    text = re.sub(r"^\W*pdf\b\W*", "", (text or "").lower())
+    return " ".join(re.findall(r"[^\W_]+", text))
+
+
+def web_title_match(result_title, paper_title):
+    """Whether a search result's (often truncated) title is this paper's title.
+
+    A truncated result title must be a substring of the paper title; a result
+    title with extra words (a site name) must contain it. Fragments under 20
+    characters only count as an exact match, so "Introduction" matches nothing.
+    """
+    found, wanted = normalise_title(result_title), normalise_title(paper_title)
+    if not found or not wanted:
+        return False
+    if found == wanted:
+        return True
+    return (len(found) >= 20 and found in wanted) or (len(wanted) >= 20 and wanted in found)
+
+
+def web_search(query, cache_dir):
+    """Search results for `query` as a list of {title, href} dicts, or [].
+
+    Non-empty results are cached for WEB_CACHE_DAYS. Searches are spaced at
+    least WEB_SEARCH_SPACING apart, across runs, through a timestamp file.
+    `ddgs` scrapes search engines, so any failure — rate limit, changed page,
+    missing package — counts as "found nothing".
+    """
+    search_dir = os.path.join(cache_dir, "web-search")
+    os.makedirs(search_dir, exist_ok=True)
+    cache_file = os.path.join(search_dir, hashlib.md5(query.encode()).hexdigest() + ".json")
+    if os.path.exists(cache_file) and \
+            time.time() - os.path.getmtime(cache_file) < WEB_CACHE_DAYS * 86400:
+        with open(cache_file) as f:
+            return json.load(f)
+
+    stamp = os.path.join(search_dir, ".last-search")
+    if os.path.exists(stamp):
+        time.sleep(max(0.0, WEB_SEARCH_SPACING - (time.time() - os.path.getmtime(stamp))))
+    try:
+        from ddgs import DDGS
+
+        results = DDGS(timeout=15).text(query, max_results=WEB_RESULTS) or []
+    except Exception as e:
+        log(f"  Web search failed ({type(e).__name__}: {e}), treating as no results")
+        results = []
+    finally:
+        with open(stamp, "w"):
+            pass
+
+    results = [{"title": r.get("title", ""), "href": r.get("href", "")} for r in results]
+    if results:
+        with open(cache_file, "w") as f:
+            json.dump(results, f)
+    return results
+
+
+def web_pdf_links(results, paper_title):
+    """PDF links among the results whose title matches the paper, in result order."""
+    links = [r["href"] for r in results
+             if ".pdf" in r["href"].lower() and web_title_match(r["title"], paper_title)]
+    return list(dict.fromkeys(links))[:WEB_MAX_PDFS]
+
+
+def web_download(doi, title, tmp_path, pages, cache_dir):
+    """Search for "<DOI> pdf", then '"<title>" pdf', and walk the matched PDF links.
+
+    Returns (accepted_url, blocked_urls). Every PDF must pass the identity
+    check, so a preprint, slides or another paper with the same title is
+    skipped rather than kept.
+    """
+    tried, blocked = set(), []
+    for query in (f"{doi} pdf", f'"{title}" pdf'):
+        log(f"  Web search: {query[:90]}")
+        links = [u for u in web_pdf_links(web_search(query, cache_dir), title) if u not in tried]
+        if not links:
+            log("    no title-matched PDF links")
+            continue
+        tried.update(links)
+        accepted, more_blocked, _ = walk_pdf_links(links, tmp_path, doi, title, pages,
+                                                   label="Web search")
+        blocked += more_blocked
+        if accepted:
+            return accepted, blocked
+    return None, blocked
 
 
 # =============================================================================
@@ -370,12 +474,24 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
             log("Downloaded via fetchpdf")
             return cache_path, candidates
 
+        if meta.get("title") or title:
+            log("Searching the web for a PDF...")
+            accepted, web_blocked = web_download(
+                doi, meta.get("title") or title, tmp_path, meta.get("pages"), cache_dir)
+            if accepted:
+                os.replace(tmp_path, cache_path)
+                log(f"Downloaded via web search: {accepted}")
+                return cache_path, candidates
+            candidates += [(u, "web-search link, no PDF by plain HTTP") for u in web_blocked]
+        else:
+            log("No title available, skipping the web-search step")
+
         api_keys = serpapi_keys(load_key_file())
         query = build_scholar_query(query_title, meta.get("authors"))
         if api_keys and query:
             log(f"Searching Google Scholar for: {query[:80]}")
             links = scholar_pdf_links(query, api_keys)
-            accepted, blocked, wrong = scholar_download(
+            accepted, blocked, wrong = walk_pdf_links(
                 links, tmp_path, doi, meta.get("title") or title, meta.get("pages"))
             if accepted:
                 os.replace(tmp_path, cache_path)
