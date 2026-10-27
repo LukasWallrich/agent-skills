@@ -119,8 +119,9 @@ def crossref_metadata(doi):
         msg = json.loads(body).get("message", {})
     except ValueError:
         return {}
-    title = (msg.get("title") or [None])[0]
-    subtitle = (msg.get("subtitle") or [None])[0]
+    # Crossref titles can carry JATS markup ("<i>Drosophila</i>"), which a PDF never prints.
+    title, subtitle = ((re.sub(r"<[^>]+>", "", t) if t else t)
+                       for t in ((msg.get(k) or [None])[0] for k in ("title", "subtitle")))
     return {
         "title": title,
         "search_title": f"{title}: {subtitle}" if title and subtitle else title,
@@ -129,23 +130,54 @@ def crossref_metadata(doi):
     }
 
 
+#: A DOI-only acceptance also needs this much of the title on the front two
+#: pages (fetchpdf's gap-tolerant `matched_fraction`). Measured on 121 cached
+#: PDFs whose DOI fetchpdf found in the text: a paper citing the DOI scored 0.52,
+#: a supplementary-information file 0.64, a line-numbered medRxiv preprint (the
+#: right paper) 0.76, and every other right paper 0.97 or more.
+DOI_ONLY_TITLE_MIN = 0.70
+
+#: Below this much squashed front-page text, a missing title says nothing.
+LEGIBLE_FRONT_CHARS = 400
+
+
 def verify_identity(path, doi, title, pages):
-    """fetchpdf's verdict on whether the PDF at `path` is this DOI's paper."""
+    """fetchpdf's verdict on whether the PDF at `path` is this DOI's paper.
+
+    fetchpdf accepts a PDF whose first three pages print the requested DOI,
+    which a paper *citing* it, or its supplementary file, does too: for
+    10.1037/0022-3514.74.6.1464 it accepted a 2021 article quoting that DOI in
+    its abstract. So a DOI-only acceptance is refused when the front pages are
+    legible and carry too little of the title.
+    """
     with contextlib.redirect_stdout(sys.stderr):
-        from fetchpdf.retrieval.pdf_identity import verify_pdf_identity
+        from fetchpdf.retrieval._util import matched_fraction, squash
+        from fetchpdf.retrieval.pdf_identity import WRONG, IdentityVerdict, verify_pdf_identity
+        from fetchpdf.retrieval.pdf_text import pdf_text
         from fetchpdf.retrieval.resolve import arxiv_id_from_doi
 
-        return verify_pdf_identity(
+        verdict = verify_pdf_identity(
             path, doi, title, pages=pages, arxiv_id=arxiv_id_from_doi(doi)
         )
+        if not (verdict.ok and "doi-in-text" in verdict.signals and title):
+            return verdict
+        front = squash(pdf_text(path, max_pages=2, min_chars=1) or "")
+        fraction = matched_fraction(squash(title), front)
+    if len(front) >= LEGIBLE_FRONT_CHARS and fraction < DOI_ONLY_TITLE_MIN:
+        return IdentityVerdict(
+            WRONG, f"the requested DOI is printed, but only {fraction:.0%} of the title "
+            f'"{title[:70]}" is on the front pages -- likely a paper citing it, '
+            "or a supplement")
+    return verdict
 
 
 # =============================================================================
 # Step A: the fetchpdf chain
 # =============================================================================
 
-def fetchpdf_download(doi, tmp_path, email, use_playwright):
-    """Run the fetchpdf chain into tmp_path. Returns True when it wrote a PDF."""
+def fetchpdf_download(doi, tmp_path, email, use_playwright, title=None, pages=None):
+    """Run the fetchpdf chain into tmp_path. Returns True when it wrote a PDF
+    that also passes `verify_identity`; a refused PDF is deleted."""
     with contextlib.redirect_stdout(sys.stderr):
         from fetchpdf import fetch_pdf
 
@@ -158,7 +190,14 @@ def fetchpdf_download(doi, tmp_path, email, use_playwright):
             use_playwright=use_playwright,
         )
     # A path fetchpdf did not return is a file it declined to vouch for.
-    return written is not None and validate_pdf(tmp_path)
+    if written is None or not validate_pdf(tmp_path):
+        return False
+    verdict = verify_identity(tmp_path, doi, title, pages)
+    if verdict.ok:
+        return True
+    log(f"  fetchpdf's PDF rejected ({verdict.state}): {verdict.reason}")
+    os.unlink(tmp_path)
+    return False
 
 
 # =============================================================================
@@ -469,7 +508,8 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
     blocked = []
     try:
         log(f"Fetching {doi} via fetchpdf...")
-        if fetchpdf_download(doi, tmp_path, email, use_playwright):
+        if fetchpdf_download(doi, tmp_path, email, use_playwright,
+                             meta.get("title") or title, meta.get("pages")):
             os.replace(tmp_path, cache_path)
             log("Downloaded via fetchpdf")
             return cache_path, candidates

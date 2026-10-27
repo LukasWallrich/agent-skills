@@ -125,7 +125,10 @@ Success prints the verified PDF's path on stdout (same contract as `download_pap
 - **Verify page 1 against the DOI or title for anything you fetch by hand.** Title-based
   search returns topically-similar papers under the DOI you asked for, and a mislabelled
   PDF silently corrupts whatever dataset it lands in. `download_paper.py` and
-  `institutional_fetch.py` both run fetchpdf's identity check themselves; the `browser-use`
+  `institutional_fetch.py` both run fetchpdf's identity check themselves, and also refuse a
+  PDF whose only evidence is the printed DOI when its front pages carry under 70% of the
+  title — a paper citing the DOI, or the article's supplement, prints it too
+  ([fetchpdf#5](https://github.com/The-Metascience-Observatory/fetchpdf/issues/5)); the `browser-use`
   route does not.
 - **Navigate before you fetch.** Cross-origin fetch of a publisher PDF is CORS-blocked. The
   Chrome step navigates the tab to the PDF URL first, waits until

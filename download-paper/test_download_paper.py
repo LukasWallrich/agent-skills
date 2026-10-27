@@ -70,10 +70,63 @@ def test_no_right_paper_leaves_nothing_behind(scholar, tmp_path):
     assert not os.path.exists(tmp)
 
 
-# --- Step W: web search, with ddgs and the network mocked ------------------
+# --- The identity check: a printed DOI is not enough on its own -------------
 
 TITLE = "Intergroup Contact and Prejudice: A Meta-Analysis"
+LONG_FRONT = "x" * 500
 
+
+@pytest.fixture
+def fetchpdf_stub(monkeypatch):
+    """Stand-in fetchpdf modules: the DOI is always found; the front text is settable."""
+    import types
+    state = {"front": LONG_FRONT, "fraction": 1.0, "signals": ["doi-in-text"]}
+
+    class IdentityVerdict(Verdict):
+        def __init__(self, state_, reason, signals=None):
+            super().__init__(state_ == "verified", state_)
+            self.reason, self.signals = reason, signals or []
+
+    mods = {
+        "fetchpdf": types.ModuleType("fetchpdf"),
+        "fetchpdf.retrieval": types.ModuleType("fetchpdf.retrieval"),
+        "fetchpdf.retrieval._util": types.SimpleNamespace(
+            squash=lambda t: t, matched_fraction=lambda a, b: state["fraction"]),
+        "fetchpdf.retrieval.pdf_identity": types.SimpleNamespace(
+            WRONG="wrong_article", IdentityVerdict=IdentityVerdict,
+            verify_pdf_identity=lambda *a, **k: IdentityVerdict(
+                "verified", "found", state["signals"])),
+        "fetchpdf.retrieval.pdf_text": types.SimpleNamespace(
+            pdf_text=lambda *a, **k: state["front"]),
+        "fetchpdf.retrieval.resolve": types.SimpleNamespace(arxiv_id_from_doi=lambda d: None),
+    }
+    for name, mod in mods.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    return state
+
+
+def test_doi_without_the_title_is_a_citing_paper(fetchpdf_stub):
+    fetchpdf_stub["fraction"] = 0.52
+    verdict = dp.verify_identity("x.pdf", "10.1/x", TITLE, "1-9")
+    assert not verdict.ok and verdict.state == "wrong_article"
+
+
+def test_doi_with_a_partly_legible_title_is_kept(fetchpdf_stub):
+    fetchpdf_stub["fraction"] = 0.76          # line-numbered preprint
+    assert dp.verify_identity("x.pdf", "10.1/x", TITLE, "1-9").ok
+
+
+def test_doi_on_an_illegible_front_page_is_kept(fetchpdf_stub):
+    fetchpdf_stub.update(fraction=0.0, front="x" * 100)
+    assert dp.verify_identity("x.pdf", "10.1/x", TITLE, "1-9").ok
+
+
+def test_title_acceptance_is_not_rechecked(fetchpdf_stub):
+    fetchpdf_stub.update(fraction=0.0, signals=["title-on-page"])
+    assert dp.verify_identity("x.pdf", "10.1/x", TITLE, "1-9").ok
+
+
+# --- Step W: web search, with ddgs and the network mocked ------------------
 
 @pytest.mark.parametrize("result_title, ok", [
     ("PDF Intergroup Contact and Prejudice: A Meta-Analysis", True),
