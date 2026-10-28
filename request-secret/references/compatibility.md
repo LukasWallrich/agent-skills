@@ -98,9 +98,11 @@ It never closes on a failed or unconfirmed save. If the browser blocks script
 closing, the cleared form is replaced by a saved confirmation. Browsers restrict
 which windows scripts may close; see [Window.close](https://developer.mozilla.org/en-US/docs/Web/API/Window/close).
 
-Use a regular browser for real entry. T3 preview automation has tool/action history;
-inspecting form values or typing a real credential through an agent tool defeats
-the entry boundary. Browser extensions, devtools, OS clipboard managers and local
+Use a regular browser for newly requested credential entry. T3 preview automation
+has tool/action history; inspecting or typing values in the helper's private
+capture form defeats that entry boundary. This does not prohibit using a
+credential the user already supplied to sign in to the intended service.
+Browser extensions, devtools, OS clipboard managers and local
 debugging can also observe user input. Prefer the native dialog for a single value
 on a local Mac.
 

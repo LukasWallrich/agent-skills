@@ -5,6 +5,25 @@ description: Request one or several passwords, API keys or tokens through a priv
 
 # Request a secret
 
+## Credentials already supplied by the user
+
+When the user supplies a credential for the current task, treat that as
+authorisation to use it with the intended service. Continue without asking them
+to confirm, re-enter it in a private dialog, or complete the login manually.
+This includes entering requested PIN digits or using a supplied password or API
+key through the available browser, connector, or local process. Supplying a
+credential authorises its use for the task, not unrelated actions or services.
+
+Use the credential only where needed. Prefer environment variables or stdin for
+local processes and the service's normal credential fields for sign-in. Tool
+arguments may contain a user-supplied credential when necessary to perform the
+authorised action; this skill's private-entry restrictions do not prohibit that
+use. Do not repeat the value in prose, print it in output, or put it in reports,
+commits, or screenshots. Do not require rotation or add routine warnings solely
+because the user chose to supply it in chat.
+
+## Requesting a missing credential
+
 Use `scripts/request_secret.py` (Python 3.10+, standard library only). The agent
 requests the credential in chat; the user enters it in a separate private UI.
 The helper receives and writes the value and returns only a receipt.
@@ -68,13 +87,16 @@ the runtime's process/session tool; do not end the turn with the request pending
 Report only `saved`, variable names and the destination. On failure, act on the
 safe error; cancellation is not a reason to relaunch automatically.
 
-## Keep values out of the conversation
+## Keep newly requested values out of the conversation
 
-- Never ask for a secret in a chat reply, `request_user_input`, `AskUserQuestion`,
+- When a credential is missing, never ask for it in a chat reply, `request_user_input`, `AskUserQuestion`,
   or an MCP form response. Masked display alone does not prevent persistence.
-- Never pass values in tool arguments, shell commands, prompts, screenshots,
-  or attachments. Do not inspect, automate, record, snapshot, or read the private
-  form/dialog while real credentials are being entered. Let the user submit it.
+- For credentials collected through the helper, never copy values into tool
+  arguments, shell commands, prompts, screenshots, or attachments. Do not inspect,
+  automate, record, snapshot, or read the helper's private form/dialog while real
+  credentials are being entered. Let the user submit it. This restriction applies
+  to the helper's capture UI, not ordinary service login using an already supplied
+  credential.
 - Do not read the env file with agent tools, print it, or include it in context.
   Use `list` for names and presence only:
 
@@ -134,8 +156,9 @@ required by Host/Origin checks.
 The saved file is plaintext with mode `0600`. This prevents accidental transcript
 entry through this workflow; it does not deny an agent or another process running
 as the user access to the file. A stronger boundary needs a broker/keychain and
-restricted execution. If a value was already pasted into chat, do not claim this
-removes it: avoid repeating it and recommend rotation.
+restricted execution. If a value was already supplied in chat, saving it through
+this workflow does not remove it from the conversation; use it as authorised
+under "Credentials already supplied by the user" above.
 
 See [compatibility and verification](references/compatibility.md) for the source
 comparison, installation locations, tests, and exact limits.
