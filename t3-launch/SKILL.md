@@ -1,63 +1,22 @@
 ---
 name: t3-launch
-description: Add an existing local folder as a T3 Code project and launch a new prompt with a chosen model, using the running T3 server's local API instead of computer use. Use when the user asks to add projects or start chats in T3 Code.
+description: Start a new top-level T3 Code conversation in a project, locally or on the box. Prefer native T3 tools; use the remote protocol-2 fallback when the target server is outside the connected environment. Not for delegated subagents.
 ---
 
-# T3 Code project and prompt launch
+# Launch a T3 thread
 
-Use `scripts/t3_launch.py` to control the running local desktop app or headless server. It uses the installed CLI for a five-minute bearer session, revokes it afterwards, and sends supported orchestration commands over loopback HTTP. It does not modify the T3 database directly or need an additional server, browser, or package installation.
+## Use native tools in the connected environment
 
-On macOS, the default CLI comes from `/Applications/T3 Code (Alpha).app`; `--app` overrides that bundle. On Linux, the helper finds `t3` on PATH or the running T3 service executable through `/proc`. Pass `--cli /absolute/path/to/t3` to select another installed CLI. `--home` overrides the T3 data directory. The desktop app or server must already be running. The endpoint comes from `<home>/userdata/server-runtime.json`; do not assume port 3773. Remote environments are outside this helper's scope.
+Call `t3_environment_read` to identify the server, then `t3_project_list` to find the project by its canonical workspace path. Native tools operate on that environment; a paired box in the desktop sidebar does not make the Mac's tools target the box. The current `t3_thread_launch` schema has no remote-environment selector. If future tools expose one, prefer it to the fallback.
 
-Resolve `<skill-root>` to the directory containing this `SKILL.md`, following symlinks if needed. The helper needs only Python 3 and an installed T3 app or CLI. It controls the T3 server on the same machine: box-side paths refer to projects on the box, not on the Mac.
+Use `orchestrator_capabilities` for the live provider/model catalog. Start an ordinary top-level conversation with `t3_thread_launch`, passing the project's ID, title and task as `message`. Choose the requested model or inherit the established model; do not silently route Codex through OpenRouter. Preserve the parent's runtime mode and the user's task restrictions. A status request should ask for inspection and an update without starting another extraction or other substantive job.
 
-## Add or reuse a project
+Set `workspaceStrategy` explicitly: `{"type":"root"}` for the project's existing root, `existing_worktree` for a specified checkout, or `worktree` with an explicit base ref for a new checkout. Omitted project/workspace settings may target the caller's project or its root instead of the intended location. Use the native project creation tool when the project is missing, or the remote project mutation endpoint described below.
 
-Locate the intended folder and read applicable instructions. Project identity is its canonical absolute path. Existing active projects are reused without changing their settings.
+Retain the returned thread ID. `preparing`, `queued` or `starting` means accepted, not completed. Verify with `t3_thread_read` / `t3_thread_wait` when needed. Launch has no native idempotency key: after an error or lost response, inspect `t3_thread_list` before another launch. Link as `[title](t3-thread://v1/THREAD_ID)`.
 
-```sh
-python3 <skill-root>/scripts/t3_launch.py add '/absolute/project/path'
-```
+## Launch on another server
 
-Use `--project-title` for a requested new-project title. `inspect` returns active project IDs, titles and paths without printing chat contents or credentials.
+For a box request, use the `box-access` skill to establish SSH and identify the running service. Run the fallback on the box, using box-side project paths. Read [references/remote.md](references/remote.md) for the protocol-2 transport and saved launch request.
 
-## Launch a new prompt
-
-Write the intended task to a UTF-8 prompt file under the current workspace's `work/`. Include context needed by the receiving agent, such as sources and a request to pull repository updates first, when requested. Preserve the user's scope; starting a task does not authorize publishing, contacting people, or unrelated changes.
-
-Choose the model from the user's request or established preference; do not silently route a Codex request through OpenRouter. `--instance codex --model gpt-6.1-sol` selects GPT-6.1 Sol through the Codex subscription. Other configured provider instances can be selected explicitly; model IDs and reasoning options must match that instance. Omit `--effort` unless requested or established by context.
-
-Inherit the launching session's access permissions and existing user authorization. Always pass `--runtime-mode` matching the current session: `full-access` for unrestricted execution without approvals, `approval-required` for approval-gated execution, `auto-accept-edits` for automatic edit approval, or `auto` for classifier-approved actions. A full-access parent launches a full-access child without asking for permission again. Downscope only when the user requests it or a concrete task-specific reason warrants it; state that reason and pass the narrower mode explicitly. Preserve any additional task or tool restrictions in the prompt. The helper requires the mode because it cannot determine the caller's permissions from the local T3 server or authentication token.
-
-This example assumes the launching session has full access; substitute its actual mode when different:
-
-```sh
-python3 <skill-root>/scripts/t3_launch.py launch '/absolute/project/path' \
-  --title 'Compare deduplication methods' \
-  --prompt-file '/absolute/work/prompt.txt' \
-  --receipt '/absolute/work/t3-launch-receipt.json' \
-  --instance codex --model gpt-6.1-sol --effort high \
-  --runtime-mode full-access
-```
-
-`launch` adds the project if needed, creates the thread, and starts its first turn with the specified access mode. It uses the current checkout and records the current Git branch; it does not switch branches or pull updates itself.
-
-Keep the receipt: it reserves IDs before mutations and binds them to the project, title, model, mode and prompt hash. Re-running the identical command with the same receipt verifies the existing message without sending it again. Use a fresh receipt only for an intentionally new chat. Do not automatically use a fresh receipt after errors. If an outcome is uncertain, inspect the recorded thread before proceeding; the helper stops instead of resending.
-
-Output verifies the project, stored model, access mode and user message, counts user messages in the new chat’s latest turn, and reports turn/session state. `starting` means the prompt was accepted and the provider is starting; it is not task completion. Report that accurately. The helper does not focus the chat window. Use computer use only if UI navigation is also needed or the installed API has changed and cannot be adapted from source.
-
-For a later status check without sending anything:
-
-```sh
-python3 <skill-root>/scripts/t3_launch.py inspect --thread-id THREAD_ID
-```
-
-This reports model, latest turn, session status and the user-message count for that turn. It does not expose the chat’s message text.
-
-## Compatibility and verification
-
-T3's API is internal and can change. On schema errors, inspect the installed app version and the corresponding `packages/contracts/src/{environmentHttp,orchestration}.ts` files in an available T3 source checkout. HTTP requires separate `thread.create` and `thread.turn.start` commands; the UI's bootstrap payload alone does not create a thread through HTTP. Model options are an array of `{id, value}` objects.
-
-Project CLI commands also exist (`t3 project add PATH`, `t3 app PATH`), but there is currently no bundled thread-launch CLI. On macOS the helper calls the installed app's CLI through `ELECTRON_RUN_AS_NODE=1`; on Linux it calls the installed service executable. Both avoid downloads. Never print captured auth command output or retain bearer tokens in files.
-
-After a helper change, use an isolated scratch project and a no-tools echo prompt. Confirm the assistant response and verify that replay with the same receipt leaves only one user message. Remove only the scratch project/thread through orchestration commands after completion. Do not rerun the user's substantive task merely to test transport.
+The old Python helper used v1 dispatch endpoints and `server-runtime.json`; it is retired. Native tools replace it for the connected environment. The small `scripts/t3_rpc.mjs` fallback handles loopback authentication and protocol-2 WebSocket RPC for environments without native tool access; it does not launch a server or modify a database.

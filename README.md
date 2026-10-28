@@ -109,11 +109,10 @@ bucket is public: anything uploaded is readable by anyone with the URL.
 
 ### `t3-launch`
 
-Adds an existing local folder as a T3 Code project and starts a new chat with a chosen
-model through the running desktop app’s local API. Supports Codex and Claude skill
-discovery, reuses projects by canonical path, verifies prompt acceptance, and uses a
-receipt to prevent duplicate prompts on retries. Requires Python 3 and a running
-T3 Code desktop app on macOS or local server on Linux. The API is internal and may change with T3 updates.
+Starts a new top-level conversation in a T3 project using native tools in the connected
+environment. Includes a small Node protocol-2 transport for remote servers such as the
+box when native tools cannot target them. Remote launches retain a saved request to
+support inspection and safe recovery after connection failures.
 
 Symlink `t3-launch` into `~/.claude/skills/` or `~/.codex/skills/`.
 
