@@ -62,6 +62,18 @@ one-word change back into the source `.qmd`.
 Script endpoint and asset host. Both are yours to deploy — the endpoint is public-by-URL
 and writes into your Google Sheet, so don't point it at someone else's.
 
+### `gsheet-collect-endpoint`
+
+The HTTP contract for FORRT's shared Google Apps Script endpoint, which appends votes or
+other records to a Google Sheet (one tab per `project`) and returns raw rows or per-item
+tallies. Covers the `text/plain` POST that avoids CORS preflight, and the quirks clients
+must handle: successful posts that return HTTP errors, rate limits, and silent writes to a
+`default` tab. The script source lives in FORRT's shop repository.
+
+The endpoint is unauthenticated: anyone with the URL can write rows, and anyone who also
+knows a project name can read them. It writes into FORRT's sheet, so deploy your own copy
+for other uses.
+
 ### `download-paper`
 
 Downloads academic PDFs by DOI for claim verification: local cache, then the
