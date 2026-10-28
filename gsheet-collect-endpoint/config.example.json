@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy this to ~/.claude/gsheet-collect.config.json (NOT into the skill folder) and fill in the endpoint.",
+  "endpoint": "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec"
+}

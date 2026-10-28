@@ -74,6 +74,9 @@ The endpoint is unauthenticated: anyone with the URL can write rows, and anyone 
 knows a project name can read them. It writes into FORRT's sheet, so deploy your own copy
 for other uses.
 
+**Setup:** copy `config.example.json` to `~/.claude/gsheet-collect.config.json` and fill in
+the endpoint URL.
+
 ### `download-paper`
 
 Downloads academic PDFs by DOI for claim verification: local cache, then the

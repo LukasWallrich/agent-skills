@@ -12,11 +12,13 @@ different `project` value — no redeploy is needed to add a new campaign/tab. T
 
 ## Endpoint URL
 
-```
-https://script.google.com/macros/s/AKfycbyx858xfSCgHQ8RmbfbMsdzcmzrkNs_JZVmqeEBVrH-S6g8YJbI32CY7if-k8oTzg-eyQ/exec
-```
+The URL lives in `~/.claude/gsheet-collect.config.json` as `endpoint`. **Read it from that file
+and substitute it wherever this document writes `ENDPOINT` or `<ENDPOINT>`.** If the file is
+missing, stop and ask the user to create it from `config.example.json` — never guess a URL. The
+endpoint writes into FORRT's sheet, so anyone outside FORRT should deploy their own copy of the
+script instead.
 
-Store this per app (e.g. in a `config.js`), don't hard-code it in many places. The `/exec` URL is
+In an app, store the URL once (e.g. in a `config.js`), not in many places. The `/exec` URL is
 stable across code edits as long as you edit the existing deployment.
 
 ## Submit a record — `POST`
