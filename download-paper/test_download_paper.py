@@ -1,4 +1,4 @@
-"""The web-search, Google Scholar and Chrome candidate loops, with network and Chrome mocked.
+"""The web-search, publisher-API, Google Scholar and Chrome steps, with network and Chrome mocked.
 
 Run with:
     cd /Users/lukaswallrich/Documents/Coding/agent-skills/download-paper && \
@@ -318,3 +318,415 @@ def test_step_is_skipped_when_chrome_is_not_running(monkeypatch, tmp_path):
 
     assert dp.browser_download("10.1/x", [], str(tmp_path / "part.pdf"),
                                "A Title", "1-9", "") is None
+
+
+# --- Step P: publisher APIs, with HTTP mocked --------------------------------
+
+WILEY_DOI = "10.1002/pits.1"
+SPRINGER_DOI = "10.1186/s1-2"
+SECRET = "sekret-key-123"
+
+
+class Response:
+    def __init__(self, status=200, content=b"", location=None):
+        self.status_code = status
+        self.content = content
+        self.is_redirect = location is not None
+        self.headers = {"Location": location} if location else {}
+
+
+@pytest.fixture
+def http(monkeypatch, tmp_path):
+    """Queue responses for requests.get, and record every call made."""
+    calls, queue = [], []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        outcome = queue.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(dp.requests, "get", fake_get)
+    monkeypatch.setattr(dp, "_wiley_off", False)
+    monkeypatch.setattr(dp, "_springer_off", False)
+    monkeypatch.setattr(dp, "WILEY_TDM_SPACING", 0)
+    monkeypatch.setattr(dp, "SPRINGER_OA_SPACING", 0)
+    return calls, queue
+
+
+def test_wiley_keeps_the_token_off_the_redirect(http, tmp_path):
+    calls, queue = http
+    queue += [Response(302, location="https://alm.wiley.com/x.pdf"), Response(200, PDF)]
+
+    assert dp.wiley_tdm_pdf(WILEY_DOI, SECRET, str(tmp_path)) == PDF
+
+    assert calls[0][1]["headers"]["Wiley-TDM-Client-Token"] == SECRET
+    assert calls[0][1]["allow_redirects"] is False
+    assert "10.1002%2Fpits.1" in calls[0][0]
+    assert calls[1][0] == "https://alm.wiley.com/x.pdf"
+    assert SECRET not in repr(calls[1])
+
+
+def test_wiley_403_is_not_entitled_and_the_route_stays_on(http, tmp_path, capsys):
+    _, queue = http
+    queue.append(Response(403))
+
+    assert dp.wiley_tdm_pdf(WILEY_DOI, SECRET, str(tmp_path)) is None
+
+    assert "not entitled" in capsys.readouterr().err
+    assert dp._wiley_off is False
+
+
+def test_wiley_429_switches_the_route_off(http, tmp_path):
+    _, queue = http
+    queue.append(Response(429))
+    assert dp.wiley_tdm_pdf(WILEY_DOI, SECRET, str(tmp_path)) is None
+    assert dp._wiley_off is True
+
+
+def test_wiley_refusal_by_the_download_host_is_not_called_entitlement(http, tmp_path, capsys):
+    _, queue = http
+    queue += [Response(302, location="https://alm.wiley.com/x.pdf"), Response(403)]
+
+    assert dp.wiley_tdm_pdf(WILEY_DOI, SECRET, str(tmp_path)) is None
+    assert "not entitled" not in capsys.readouterr().err
+
+
+def test_wiley_html_is_not_a_pdf(http, tmp_path):
+    _, queue = http
+    queue.append(Response(200, BLOCKED_HTML))
+    assert dp.wiley_tdm_pdf(WILEY_DOI, SECRET, str(tmp_path)) is None
+
+
+def test_wiley_error_text_is_redacted(http, tmp_path, capsys):
+    _, queue = http
+    queue.append(dp.requests.ConnectionError(f"boom token={SECRET}"))
+
+    assert dp.wiley_tdm_pdf(WILEY_DOI, SECRET, str(tmp_path)) is None
+
+    captured = capsys.readouterr()
+    assert SECRET not in captured.err + captured.out
+
+
+def jats(doi=SPRINGER_DOI, title=TITLE, body="word " * 400):
+    body_xml = f"<body><p>{body}</p></body>" if body else ""
+    return (f'<response><records><article><front><article-meta>'
+            f'<article-id pub-id-type="publisher-id">s1</article-id>'
+            f'<article-id pub-id-type="doi">{doi}</article-id>'
+            f'<title-group><article-title>{title}</article-title></title-group>'
+            f'<abstract><p>Short.</p></abstract></article-meta></front>{body_xml}'
+            f'</article></records></response>').encode()
+
+
+def test_springer_writes_only_the_verified_article(http, tmp_path, fetchpdf_stub):
+    calls, queue = http
+    queue.append(Response(200, jats()))
+
+    path = dp.springer_oa_xml(SPRINGER_DOI, TITLE, SECRET, str(tmp_path))
+
+    assert path == dp.doi_to_xml_path(SPRINGER_DOI, str(tmp_path))
+    assert open(path, "rb").read().startswith(b"<article")
+    assert calls[0][1]["params"] == {"q": f"doi:{SPRINGER_DOI}", "api_key": SECRET}
+    assert calls[0][1]["allow_redirects"] is False
+    # A second call answers from the cache.
+    assert dp.springer_oa_xml(SPRINGER_DOI, TITLE, SECRET, str(tmp_path)) == path
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("response, off", [
+    (Response(404, b"No data was found"), False),
+    (Response(500), False),
+    (Response(200, b"<html>not closed"), False),
+    (Response(200, b"<response><records/></response>"), False),
+    (Response(200, jats(doi="10.1186/another")), False),
+    (Response(200, jats(body="")), False),
+    (Response(200, jats(body="too short")), False),
+    (Response(401), True),
+    (Response(403), True),
+    (Response(429), True),
+])
+def test_springer_misses_leave_no_file(http, tmp_path, fetchpdf_stub, response, off):
+    _, queue = http
+    queue.append(response)
+
+    assert dp.springer_oa_xml(SPRINGER_DOI, TITLE, SECRET, str(tmp_path)) is None
+
+    assert not os.path.exists(dp.doi_to_xml_path(SPRINGER_DOI, str(tmp_path)))
+    assert dp._springer_off is off
+
+
+def test_springer_rejects_a_record_with_another_title(http, tmp_path, fetchpdf_stub):
+    fetchpdf_stub["fraction"] = 0.2
+    _, queue = http
+    queue.append(Response(200, jats(title="Something else")))
+    assert dp.springer_oa_xml(SPRINGER_DOI, TITLE, SECRET, str(tmp_path)) is None
+
+
+def test_springer_error_text_is_redacted(http, tmp_path, capsys):
+    _, queue = http
+    queue.append(dp.requests.ConnectionError(f"Max retries with url: /jats?api_key={SECRET}"))
+
+    assert dp.springer_oa_xml(SPRINGER_DOI, TITLE, SECRET, str(tmp_path)) is None
+
+    captured = capsys.readouterr()
+    assert SECRET not in captured.err + captured.out
+    assert "<redacted>" in captured.err
+
+
+@pytest.fixture
+def walk(monkeypatch, http, fetchpdf_stub):
+    """A walk where fetchpdf and the web search find nothing."""
+    monkeypatch.setattr(dp, "crossref_metadata", lambda doi: {"title": TITLE, "search_title": TITLE, "pages": "1-9"})
+    monkeypatch.setattr(dp, "fetchpdf_download", lambda *a: False)
+    monkeypatch.setattr(dp, "web_search", lambda q, cache_dir: [])
+    return http
+
+
+@pytest.mark.parametrize("doi", [WILEY_DOI, SPRINGER_DOI])
+def test_routes_are_silent_and_make_no_call_without_a_key(walk, monkeypatch, tmp_path, capsys, doi):
+    monkeypatch.setattr(dp, "load_key_file", lambda: {})
+
+    path, _ = dp.download_paper(doi, cache_dir=str(tmp_path), use_browser=False)
+
+    assert path is None
+    assert walk[0] == []
+    err = capsys.readouterr().err
+    assert "Wiley" not in err and "Springer" not in err
+
+
+@pytest.mark.parametrize("doi", ["10.1037/x", "10.1186/s1-2"])
+def test_wiley_is_asked_only_about_its_own_dois(walk, monkeypatch, tmp_path, doi):
+    monkeypatch.setattr(dp, "load_key_file", lambda: {"WILEY_TDM_TOKEN": SECRET})
+    dp.download_paper(doi, cache_dir=str(tmp_path), use_browser=False)
+    assert walk[0] == []
+
+
+def test_wiley_pdf_goes_through_the_identity_check(walk, monkeypatch, tmp_path):
+    monkeypatch.setattr(dp, "load_key_file", lambda: {"WILEY_TDM_TOKEN": SECRET})
+    monkeypatch.setattr(dp, "verify_identity", lambda *a: Verdict(False, "wrong_article"))
+    walk[1].append(Response(200, PDF))
+
+    path, _ = dp.download_paper(WILEY_DOI, cache_dir=str(tmp_path), use_browser=False)
+
+    assert path is None
+    assert not os.path.exists(dp.doi_to_cache_path(WILEY_DOI, str(tmp_path)))
+
+
+def test_wiley_pdf_that_verifies_is_cached(walk, monkeypatch, tmp_path):
+    monkeypatch.setattr(dp, "load_key_file", lambda: {"WILEY_TDM_TOKEN": SECRET})
+    monkeypatch.setattr(dp, "verify_identity", lambda *a: Verdict(True, "verified"))
+    walk[1].append(Response(200, PDF))
+
+    path, _ = dp.download_paper(WILEY_DOI, cache_dir=str(tmp_path), use_browser=False)
+
+    assert path == dp.doi_to_cache_path(WILEY_DOI, str(tmp_path))
+    assert dp.validate_pdf(path)
+
+
+def test_springer_xml_is_a_separate_outcome_by_default(walk, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(dp, "load_key_file", lambda: {"SPRINGER_OA_API_KEY": SECRET})
+    walk[1].append(Response(200, jats()))
+
+    path, _ = dp.download_paper(SPRINGER_DOI, cache_dir=str(tmp_path), use_browser=False)
+
+    assert path is None         # the PDF contract is unchanged
+    xml = dp.doi_to_xml_path(SPRINGER_DOI, str(tmp_path))
+    assert f"FULLTEXT_XML={xml}" in capsys.readouterr().err
+
+
+def test_accept_xml_stops_the_walk(walk, monkeypatch, tmp_path):
+    monkeypatch.setattr(dp, "load_key_file", lambda: {"SPRINGER_OA_API_KEY": SECRET})
+    monkeypatch.setattr(dp, "web_search", lambda q, cache_dir: pytest.fail("walk went on"))
+    walk[1].append(Response(200, jats()))
+
+    path, _ = dp.download_paper(SPRINGER_DOI, cache_dir=str(tmp_path), use_browser=False,
+                                accept_xml=True)
+
+    assert path == dp.doi_to_xml_path(SPRINGER_DOI, str(tmp_path))
+    # The next run goes straight to the cached XML.
+    monkeypatch.setattr(dp, "fetchpdf_download", lambda *a: pytest.fail("not needed"))
+    assert dp.download_paper(SPRINGER_DOI, cache_dir=str(tmp_path), accept_xml=True)[0] == path
+
+
+def test_accept_xml_exits_3_with_nothing_on_stdout(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(dp, "download_paper", lambda **k: (str(tmp_path / "a.jats.xml"), []))
+    monkeypatch.setattr(dp, "load_key_file", lambda: {})
+    monkeypatch.setattr(dp.sys, "argv", ["x", "--doi", SPRINGER_DOI, "--accept-xml"])
+    monkeypatch.setattr(dp, "STDOUT", sys.stdout)
+
+    with pytest.raises(SystemExit) as e:
+        dp.main()
+
+    assert e.value.code == 3
+    assert capsys.readouterr().out == ""
+
+
+def test_load_key_file_reads_comments_and_values(monkeypatch, tmp_path):
+    keys = tmp_path / "keys.env"
+    keys.write_text("# Publisher APIs\nWILEY_TDM_TOKEN=abc\nexport SPRINGER_OA_API_KEY='def'\n")
+    monkeypatch.setattr(dp, "KEY_FILE", str(keys))
+    monkeypatch.delenv("WILEY_TDM_TOKEN", raising=False)
+    monkeypatch.delenv("SPRINGER_OA_API_KEY", raising=False)
+
+    loaded = dp.load_key_file()
+
+    assert loaded["WILEY_TDM_TOKEN"] == "abc" and loaded["SPRINGER_OA_API_KEY"] == "def"
+
+
+# --- The Chrome worker window, with osascript mocked -------------------------
+
+CHROME_MAIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+@pytest.fixture
+def osa(monkeypatch, tmp_path):
+    """Script osascript's answers; record scripts; never touch a real Chrome."""
+    state = {"scripts": [], "answers": lambda script: ("", "")}
+
+    def fake_osa(script, timeout=90):
+        state["scripts"].append(script)
+        return state["answers"](script)
+
+    monkeypatch.setattr(dp.chrome, "_osa", fake_osa)
+    monkeypatch.setattr(dp.chrome, "WORKER_LOCK", tmp_path / "chrome_worker.lock")
+    monkeypatch.setattr(dp.chrome.time, "sleep", lambda s: None)
+    return state
+
+
+def made_stamp(tmp_path, age=0):
+    import time
+    (tmp_path / "chrome_worker.made").write_text(str(time.time() - age))
+
+
+def windows_made(osa):
+    return [s for s in osa["scripts"] if "make new window" in s]
+
+
+def test_worker_window_is_reused(osa, tmp_path):
+    osa["answers"] = lambda s: ("42", "") if "repeat with w" in s else ("", "")
+    assert dp.chrome.worker_window() == "42"
+    assert not windows_made(osa)
+
+
+def test_a_recent_stamp_blocks_a_second_window(osa, tmp_path):
+    made_stamp(tmp_path)
+    osa["answers"] = lambda s: ("3", "") if "count of windows" in s else ("", "")
+
+    with pytest.raises(dp.chrome.ChromeError, match="last hour"):
+        dp.chrome.worker_window()
+
+    assert not windows_made(osa)
+
+
+def test_an_old_stamp_allows_one_new_window(osa, tmp_path):
+    made_stamp(tmp_path, age=7200)
+    made = []
+
+    def answers(s):
+        if "make new window" in s:
+            made.append(s)
+        if "repeat with w" in s:
+            return ("7", "") if made else ("", "")
+        return ("3", "") if "count of windows" in s else ("", "")
+
+    osa["answers"] = answers
+
+    assert dp.chrome.worker_window() == "7"
+    assert len(windows_made(osa)) == 1
+    assert any("set minimized of window id 7 to true" in s for s in osa["scripts"])
+
+
+def test_no_window_is_made_when_chrome_has_none(osa, tmp_path):
+    osa["answers"] = lambda s: ("0", "") if "count of windows" in s else ("", "")
+    with pytest.raises(dp.chrome.ChromeError, match="no window"):
+        dp.chrome.worker_window()
+    assert not windows_made(osa)
+
+
+def test_work_tab_is_reused(osa, tmp_path):
+    def answers(s):
+        if "repeat with w" in s:
+            return ("42", "")
+        if "count of tabs" in s:
+            return ("2", "")
+        return ("99", "") if "id of tab 2" in s else ("OK", "")
+
+    osa["answers"] = answers
+
+    with dp.chrome.ChromeTab() as tab:
+        assert tab.id == "99"
+    assert not [s for s in osa["scripts"] if "make new tab" in s]
+
+
+def test_lost_tab_is_retried_then_raises(osa):
+    osa["answers"] = lambda s: ("NOTAB", "")
+    tab = dp.chrome.ChromeTab()
+    tab.id = "99"
+
+    with pytest.raises(dp.chrome.ChromeError, match="work tab"):
+        tab.js("1+1")
+
+    assert len(osa["scripts"]) == 8
+
+
+def test_tab_is_addressed_by_id(osa):
+    osa["answers"] = lambda s: ("2", "")
+    tab = dp.chrome.ChromeTab()
+    tab.id = "99"
+    assert tab.js("1+1") == "2"
+    assert "tab id 99 of w" in osa["scripts"][0]
+
+
+def test_nav_stays_inside_the_page(osa):
+    osa["answers"] = lambda s: ("1", "")
+    tab = dp.chrome.ChromeTab()
+    tab.id = "99"
+    tab.nav("https://a.org/x'y")
+    assert "location.href" in osa["scripts"][0] and "a.org/x\\\\'y" in osa["scripts"][0]
+    assert not [s for s in osa["scripts"] if "set URL" in s]
+
+
+def test_nav_leaves_an_error_page_with_set_url_and_reminimises(osa):
+    osa["answers"] = lambda s: (("", "JS error") if "location.href" in s
+                                else ("42", "") if "get URL of every tab" in s else ("OK", ""))
+    tab = dp.chrome.ChromeTab()
+    tab.id = "99"
+    tab.nav("https://a.org/x")
+    assert any("set URL of tt" in s for s in osa["scripts"])
+    assert any("set minimized of window id 42" in s for s in osa["scripts"])
+
+
+@pytest.mark.parametrize("err, allowed", [
+    ("Executing JavaScript through AppleScript is turned off.", False),
+])
+def test_javascript_refused_only_on_turned_off(osa, err, allowed):
+    osa["answers"] = lambda s: ("", err)
+    tab = dp.chrome.ChromeTab()
+    tab.id = "99"
+    assert tab.javascript_allowed() is allowed
+
+
+def test_other_javascript_errors_raise(osa):
+    osa["answers"] = lambda s: ("", "Chrome got an error: busy")
+    tab = dp.chrome.ChromeTab()
+    tab.id = "99"
+    with pytest.raises(dp.chrome.ChromeError, match="busy"):
+        tab.javascript_allowed()
+
+
+def test_extra_chrome_instances_ignores_the_users_chrome_and_helpers(monkeypatch):
+    ps = (f"  100 {CHROME_MAIN}\n"
+          f"  200 {CHROME_MAIN} --user-data-dir=/tmp/pw --remote-debugging-pipe\n"
+          "  300 /Applications/Google Chrome.app/Contents/Frameworks/Helper --type=renderer\n"
+          "  400 /Users/x/Library/Caches/ms-playwright/chromium/Chromium --no-sandbox\n")
+    monkeypatch.setattr(dp.chrome.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"stdout": ps})())
+    assert dp.chrome.extra_chrome_instances() == ["200"]
+
+
+def test_wait_for_one_chrome_gives_up(monkeypatch):
+    monkeypatch.setattr(dp.chrome, "extra_chrome_instances", lambda: ["200"])
+    monkeypatch.setattr(dp.chrome.time, "sleep", lambda s: None)
+    with pytest.raises(dp.chrome.ChromeError, match="another Google Chrome"):
+        dp.chrome.wait_for_one_chrome(timeout=-1)

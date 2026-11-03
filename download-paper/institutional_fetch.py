@@ -57,6 +57,8 @@ import argparse, base64, hashlib, json, os, re, subprocess, sys, time
 from pathlib import Path
 from urllib.parse import quote
 
+import fcntl
+
 import requests
 
 BU = ["browser-use", "--browser", "real"]
@@ -66,6 +68,9 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 #: Base64 characters read back per osascript call.
 CHUNK = 800_000
+#: Marker tab of the minimised Chrome window this skill works in.
+WORKER_URL = "about:blank#download-paper-worker"
+WORKER_LOCK = CACHE / "chrome_worker.lock"
 
 
 class ChromeError(RuntimeError):
@@ -106,7 +111,25 @@ def elsevier_pdf_urls(landing_url):
 # ---------------------------------------------------------------------------
 # Real-Chrome driver (macOS / osascript).
 # ---------------------------------------------------------------------------
+def extra_chrome_instances():
+    """PIDs of other Google Chrome.app instances, such as ones Playwright launched."""
+    out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+    main = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    return [line.split(None, 1)[0] for line in out.splitlines()
+            if line.split(None, 1)[-1].startswith(main + " --")]
+
+
+def wait_for_one_chrome(timeout=900):
+    """Apple Events reach only the newest instance, so wait until it is the user's."""
+    deadline = time.time() + timeout
+    while extra_chrome_instances():
+        if time.time() > deadline:
+            raise ChromeError("another Google Chrome instance has been running for 15 minutes")
+        time.sleep(20)
+
+
 def _osa(script, timeout=90):
+    wait_for_one_chrome()
     r = subprocess.run(["osascript", "-e", script], capture_output=True,
                        text=True, timeout=timeout)
     return (r.stdout or "").strip(), (r.stderr or "").strip()
@@ -124,35 +147,79 @@ def _esc_js(js):
     return js.replace("\\", "\\\\").replace('"', '\\"')
 
 
-class ChromeTab:
-    """One tab of the user's Chrome, addressed by its AppleScript id.
+def _find_worker():
+    """Id of the window holding the marker tab, or an empty string."""
+    out, _ = _osa('tell application "Google Chrome"\n'
+                  '  repeat with w in (get every window)\n'
+                  f'    if (get URL of every tab of w) contains "{WORKER_URL}" then return id of w\n'
+                  '  end repeat\n'
+                  '  return ""\n'
+                  'end tell', 30)
+    return out if out.isdigit() else ""
 
-    Opens at the end of the front window, restores whichever tab was in front,
-    and closes itself on exit. Chrome is never activated, so focus stays put.
+
+def worker_window():
+    """Id of the minimised Chrome window that holds this skill's tabs, made once.
+
+    A marker tab identifies the window. Working here leaves the user's own windows
+    alone.
+    """
+    WORKER_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with open(WORKER_LOCK, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        made = WORKER_LOCK.with_suffix(".made")
+        # Give a window that should exist time to be listed before making another.
+        for _ in range(8 if made.exists() else 2):
+            found = _find_worker()
+            if found:
+                return found
+            time.sleep(15)
+        count, err = _osa('tell application "Google Chrome" to return count of windows', 15)
+        if not count.isdigit() or int(count) == 0:
+            raise ChromeError(f"Chrome has no window open ({err or count})")
+        # A lookup that keeps failing must not fill the screen with windows.
+        if made.exists() and time.time() - float(made.read_text()) < 3600:
+            raise ChromeError("worker window not found, and one was made in the last hour")
+        _, err = _osa('tell application "Google Chrome"\n'
+                      '  make new window\n'
+                      f'  set URL of active tab of window 1 to "{WORKER_URL}"\n'
+                      'end tell', 30)
+        made.write_text(str(time.time()))
+        found = _find_worker()
+        if not found:
+            raise ChromeError(err or "could not open the worker window")
+        _osa(f'tell application "Google Chrome" to set minimized of window id {found} to true', 15)
+        return found
+
+
+class ChromeTab:
+    """The work tab of the minimised worker window, held exclusively.
+
+    AppleScript's `make new tab` and `set URL` both restore a minimised window, so
+    the one work tab is reused and navigated from inside the page. A lock queues
+    other runs, because two walks in one tab would overwrite each other.
     """
 
     def __init__(self):
         self.id = None
-        self._front = None
+        self._lock = None
 
     def __enter__(self):
-        count, err = _osa('tell application "Google Chrome" to return count of windows', 15)
-        if not count.isdigit() or int(count) == 0:
-            raise ChromeError(f"Chrome has no window open ({err or count})")
-        self._front, _ = _osa(
-            'tell application "Google Chrome" to return active tab index of front window', 15)
-        out, err = _osa(
-            'tell application "Google Chrome"\n'
-            '  set t to make new tab at end of tabs of front window'
-            ' with properties {URL:"about:blank"}\n'
-            '  return id of t\n'
-            'end tell', 30)
+        WORKER_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = open(WORKER_LOCK.with_suffix(".tab.lock"), "w")
+        fcntl.flock(self._lock, fcntl.LOCK_EX)
+        window = worker_window()
+        count, err = _osa(f'tell application "Google Chrome" to return count of tabs of window id {window}', 15)
+        if not count.isdigit():
+            raise ChromeError(err or "worker window has gone")
+        if int(count) < 2:
+            _osa(f'tell application "Google Chrome" to make new tab at end of tabs of window id {window}'
+                 ' with properties {URL:"about:blank"}', 30)
+            _osa(f'tell application "Google Chrome" to set minimized of window id {window} to true', 15)
+        out, err = _osa(f'tell application "Google Chrome" to return id of tab 2 of window id {window}', 15)
         if not out.isdigit():
-            raise ChromeError(err or "could not open a tab")
+            raise ChromeError(err or "could not find the work tab")
         self.id = out
-        if self._front.isdigit():
-            _osa('tell application "Google Chrome" to set active tab index of front window '
-                 f'to {self._front}', 15)
         return self
 
     def __exit__(self, *exc):
@@ -160,24 +227,34 @@ class ChromeTab:
         return False
 
     def _call(self, body, timeout=90):
+        # Addressing the tab by id survives other tabs opening and closing.
         script = ('tell application "Google Chrome"\n'
-                  '  repeat with w in windows\n'
-                  '    repeat with tt in tabs of w\n'
-                  f'      if (id of tt as string) is "{self.id}" then\n'
-                  f'        {body}\n'
-                  '      end if\n'
-                  '    end repeat\n'
+                  '  repeat with w in (get every window)\n'
+                  '    try\n'
+                  f'      set tt to tab id {self.id} of w\n'
+                  '    on error\n'
+                  '      set tt to missing value\n'
+                  '    end try\n'
+                  '    if tt is not missing value then\n'
+                  f'      {body}\n'
+                  '    end if\n'
                   '  end repeat\n'
                   '  return "NOTAB"\n'
                   'end tell')
-        return _osa(script, timeout)
+        # The work tab can be briefly out of reach while Chrome is busy.
+        for _ in range(8):
+            out, err = _osa(script, timeout)
+            if out != "NOTAB":
+                return out, err
+            time.sleep(15)
+        raise ChromeError("Chrome is not listing the work tab")
 
     def js(self, code, timeout=90):
         """Result of one line of JavaScript in this tab, as a string."""
         out, err = self._call(f'return (execute tt javascript "{_esc_js(code)}")', timeout)
         if err:
             raise ChromeError(err)
-        return "" if out == "NOTAB" else out
+        return out
 
     def js_soft(self, code, timeout=90):
         """`js`, but an error page that refuses JS reads as an empty result."""
@@ -187,19 +264,41 @@ class ChromeTab:
             return ""
 
     def nav(self, url):
-        self._call(f'set URL of tt to "{url}"\n        return "OK"', 30)
+        """Go to `url` from inside the page; AppleScript's `set URL` un-minimises."""
+        target = url.replace("\\", "\\\\").replace("'", "\\'")
+        try:
+            self.js(f"location.href='{target}';1")
+        except ChromeError:
+            # Error pages refuse JavaScript, and only `set URL` can leave them.
+            self._call(f'set URL of tt to "{url}"\n        return "OK"', 30)
+            self.minimise()
+
+    def minimise(self):
+        window = _find_worker()
+        if window:
+            _osa(f'tell application "Google Chrome" to set minimized of window id {window} to true', 15)
 
     def close(self):
         if self.id:
-            self._call('close tt\n        return "CLOSED"', 30)
+            try:
+                self.nav("about:blank")
+            except ChromeError:
+                pass
             self.id = None
+        if self._lock:
+            self._lock.close()
+            self._lock = None
 
     def javascript_allowed(self):
         """Whether Chrome lets Apple Events run JavaScript in this tab."""
-        try:
-            return self.js("1+1", timeout=30) == "2"
-        except ChromeError:
-            return False
+        for _ in range(3):
+            out, err = self._call('return (execute tt javascript "1+1")', 30)
+            if out == "2":
+                return True
+            if "turned off" in (err or "").lower():
+                return False
+            time.sleep(1)
+        raise ChromeError(err or f"JavaScript check returned {out!r}")
 
     # -- page state ---------------------------------------------------------
     def wait_for_pdf(self, timeout=20):

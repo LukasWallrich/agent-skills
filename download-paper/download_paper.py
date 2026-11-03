@@ -9,10 +9,13 @@
 # ///
 """Download an academic PDF by DOI, and check that it is that DOI's paper.
 
-Four steps:
+The steps:
   A. `fetchpdf.fetch_pdf` — the open-access chain (OpenAlex, Unpaywall, PMC,
      Crossref links, preprint servers, repository landing pages, publisher
      routes). Every PDF it writes is checked against the requested record.
+  P. Publisher APIs, each only with its key and only for that publisher's DOIs:
+     Wiley's text-and-data-mining API (a PDF, under the same identity check) and
+     the Springer Nature Open Access API (JATS XML, never a PDF).
   W. A web search (the `ddgs` package, DuckDuckGo and other engines) for
      "<DOI> pdf", then '"<title>" pdf', when step A found nothing. It finds
      author homepages, course pages and untagged repositories. PDF links whose
@@ -21,13 +24,16 @@ Four steps:
   B. Google Scholar via SerpAPI, when steps A and W found nothing and
      a SerpAPI key is available. Each PDF link is downloaded and accepted only if
      fetchpdf's identity check says it is the requested paper.
-  C. The user's running, signed-in Chrome (macOS), when steps A, W and B found
-     nothing. One throwaway tab walks the Scholar links plain HTTP could not
-     fetch, then the publisher's own PDF URLs, then EBSCOhost. `--no-browser`
-     skips it.
+  C. The user's running, signed-in Chrome (macOS), when the steps above found
+     nothing. One tab of a minimised worker window walks the Scholar links plain
+     HTTP could not fetch, then the publisher's own PDF URLs, then EBSCOhost.
+     `--no-browser` skips it.
 
 On success: prints the absolute path to the PDF on stdout, exits 0.
 On failure: exits 1 (exit 2 with --open, after opening a candidate URL).
+stdout only ever carries a verified PDF's path. Springer's XML is reported on
+stderr as a `FULLTEXT_XML=<path>` line; with --accept-xml it also ends the walk
+and the run exits 3.
 All diagnostic output goes to stderr.
 """
 
@@ -41,8 +47,11 @@ import ssl
 import sys
 import tempfile
 import time
-from urllib.parse import quote, urlencode
+import xml.etree.ElementTree as ET
+from urllib.parse import quote, urlencode, urljoin
 from urllib.request import Request, urlopen
+
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import institutional_fetch as chrome
@@ -63,6 +72,20 @@ KEY_FILE = os.path.expanduser("~/.claude/api_keys.env")
 FETCHPDF_KEY_NAMES = {"COREAPIKEY": "CORE_API_KEY",
                       "ELSEVIER_TDM_API_KEY": "ELSEVIER_API_KEY",
                       "OPENALEXAPIKEY": "OPENALEX_API_KEY"}
+#: Registrants whose articles Wiley Online Library hosts, including the BPS (10.1348)
+#: and Physiological Society (10.1113) back files.
+WILEY_PREFIXES = frozenset({"10.1002", "10.1111", "10.1046", "10.1034", "10.1348", "10.1113"})
+WILEY_TDM_URL = "https://api.wiley.com/onlinelibrary/tdm/v1/articles/{doi}"
+WILEY_TDM_SPACING = 10.0    # documented limit: 60 requests per 10 minutes, across runs
+SPRINGER_NATURE_PREFIXES = frozenset({"10.1007", "10.1038", "10.1057", "10.1186", "10.3758"})
+SPRINGER_OA_URL = "https://api.springernature.com/openaccess/jats"
+SPRINGER_OA_SPACING = 1.0   # basic plan: 100 requests a minute, 500 a day
+#: Below this much body text, a JATS record is a stub rather than the paper.
+JATS_MIN_BODY_CHARS = 1000
+#: An API that refused the key or the quota refuses every later call too, so these
+#: stay off for the rest of the process. A new process asks again.
+_wiley_off = False
+_springer_off = False
 
 #: stdout is reserved for the result path. fetchpdf prints its progress there,
 #: so every call into it runs with stdout redirected to this stream.
@@ -71,6 +94,23 @@ STDOUT = sys.stdout
 
 def log(msg):
     print(msg, file=sys.stderr)
+
+
+def redact(text, *secrets):
+    """`text` with each secret replaced. Requests' errors quote the whole URL."""
+    text = str(text)
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "<redacted>")
+    return text
+
+
+def wait_for_turn(stamp, spacing):
+    """Space calls to one service at least `spacing` seconds apart, across runs."""
+    if os.path.exists(stamp):
+        time.sleep(max(0.0, spacing - (time.time() - os.path.getmtime(stamp))))
+    with open(stamp, "w"):
+        pass
 
 
 def clean_doi(doi):
@@ -82,6 +122,10 @@ def clean_doi(doi):
 def doi_to_cache_path(doi, cache_dir):
     md5 = hashlib.md5(clean_doi(doi).encode()).hexdigest()
     return os.path.join(cache_dir, f"{md5}.pdf")
+
+
+def doi_to_xml_path(doi, cache_dir):
+    return doi_to_cache_path(doi, cache_dir)[:-len(".pdf")] + ".jats.xml"
 
 
 def validate_pdf(path):
@@ -198,6 +242,123 @@ def fetchpdf_download(doi, tmp_path, email, use_playwright, title=None, pages=No
     log(f"  fetchpdf's PDF rejected ({verdict.state}): {verdict.reason}")
     os.unlink(tmp_path)
     return False
+
+
+# =============================================================================
+# Step P: publisher APIs, each conditional on its key
+# =============================================================================
+
+def wiley_tdm_pdf(doi, token, cache_dir):
+    """PDF bytes from Wiley's text-and-data-mining API, or None.
+
+    The API redirects to a separate download host, and requests and urllib both
+    forward a custom header across hosts, so the redirect is followed by hand
+    without the token. Entitlement is read off the API's own answer: its 401/403
+    means this token and network may not have the article, while a refusal from
+    the download host says nothing about that.
+    """
+    global _wiley_off
+    url = WILEY_TDM_URL.format(doi=quote(doi, safe=""))
+    agent = {"User-Agent": "download-paper"}
+    wait_for_turn(os.path.join(cache_dir, ".last-wiley-tdm"), WILEY_TDM_SPACING)
+    try:
+        r = requests.get(url, headers={**agent, "Wiley-TDM-Client-Token": token},
+                         timeout=60, allow_redirects=False)
+        if r.status_code in (401, 403):
+            log(f"  Wiley TDM: HTTP {r.status_code}, not entitled to this article")
+            return None
+        if r.status_code == 429:
+            _wiley_off = True
+            log("  Wiley TDM: HTTP 429, rate limited; route off for this run")
+            return None
+        if r.is_redirect:
+            r = requests.get(urljoin(url, r.headers["Location"]), headers=agent, timeout=60)
+    except requests.RequestException as e:
+        log(f"  Wiley TDM: request failed: {redact(e, token)}")
+        return None
+    if r.status_code != 200 or not r.content.startswith(b"%PDF-"):
+        log(f"  Wiley TDM: no PDF (HTTP {r.status_code})")
+        return None
+    return r.content
+
+
+def jats_article(body, doi, title):
+    """The <article> in a Springer response that is this DOI's full text, or None.
+
+    `verify_identity` reads PDFs only, so this applies its tests to the XML: the
+    record must carry the requested DOI, enough of the title (the same threshold)
+    and a real body, because JATS front matter alone holds only the abstract.
+    """
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        log("  Springer OA: the answer is not XML")
+        return None
+    for article in root.iter("article"):
+        ids = [(e.text or "").strip().lower() for e in article.findall("front/article-meta/article-id")
+               if e.get("pub-id-type") == "doi"]
+        if doi.lower() not in ids:
+            continue
+        body_el = article.find("body")
+        if body_el is None or len("".join(body_el.itertext()).strip()) < JATS_MIN_BODY_CHARS:
+            log("  Springer OA: the record has no full-text body")
+            return None
+        found = article.find("front/article-meta/title-group/article-title")
+        if title and found is not None:
+            with contextlib.redirect_stdout(sys.stderr):
+                from fetchpdf.retrieval._util import matched_fraction, squash
+
+                fraction = matched_fraction(squash(title), squash("".join(found.itertext())))
+            if fraction < DOI_ONLY_TITLE_MIN:
+                log(f"  Springer OA: rejected, only {fraction:.0%} of the title matches")
+                return None
+        return article
+    log("  Springer OA: no record for this DOI in the answer")
+    return None
+
+
+def springer_oa_xml(doi, title, api_key, cache_dir, force=False):
+    """Path of this DOI's verified JATS XML from the Springer Nature OA API, or None.
+
+    The key rides in the query string, so the URL is never logged, exception text
+    is redacted, and redirects are not followed. A 404 is the API's normal answer
+    for anything not open access.
+    """
+    global _springer_off
+    path = doi_to_xml_path(doi, cache_dir)
+    if not force and os.path.exists(path):
+        return path
+    wait_for_turn(os.path.join(cache_dir, ".last-springer-oa"), SPRINGER_OA_SPACING)
+    try:
+        r = requests.get(SPRINGER_OA_URL, params={"q": f"doi:{doi}", "api_key": api_key},
+                         headers={"User-Agent": "download-paper"},
+                         timeout=60, allow_redirects=False)
+    except requests.RequestException as e:
+        log(f"  Springer OA: request failed: {redact(e, api_key)}")
+        return None
+    if r.status_code in (401, 403, 429):
+        _springer_off = True
+        log(f"  Springer OA: HTTP {r.status_code}, refused (key or daily quota); "
+            "route off for this run")
+        return None
+    if r.status_code == 404:
+        log("  Springer OA: no open-access record for this DOI (HTTP 404)")
+        return None
+    if r.status_code != 200:
+        log(f"  Springer OA: HTTP {r.status_code}")
+        return None
+    article = jats_article(r.content, doi, title)
+    if article is None:
+        return None
+    for prefix, uri in (("xlink", "http://www.w3.org/1999/xlink"),
+                        ("mml", "http://www.w3.org/1998/Math/MathML")):
+        ET.register_namespace(prefix, uri)
+    # Written whole under the final name, so a stopped run never leaves half a file.
+    with tempfile.NamedTemporaryFile(dir=cache_dir, prefix="part-", suffix=".xml",
+                                     delete=False) as f:
+        f.write(ET.tostring(article, encoding="utf-8"))
+    os.replace(f.name, path)
+    return path
 
 
 # =============================================================================
@@ -344,9 +505,7 @@ def web_search(query, cache_dir):
         with open(cache_file) as f:
             return json.load(f)
 
-    stamp = os.path.join(search_dir, ".last-search")
-    if os.path.exists(stamp):
-        time.sleep(max(0.0, WEB_SEARCH_SPACING - (time.time() - os.path.getmtime(stamp))))
+    wait_for_turn(os.path.join(search_dir, ".last-search"), WEB_SEARCH_SPACING)
     try:
         from ddgs import DDGS
 
@@ -354,9 +513,6 @@ def web_search(query, cache_dir):
     except Exception as e:
         log(f"  Web search failed ({type(e).__name__}: {e}), treating as no results")
         results = []
-    finally:
-        with open(stamp, "w"):
-            pass
 
     results = [{"title": r.get("title", ""), "href": r.get("href", "")} for r in results]
     if results:
@@ -443,11 +599,7 @@ def accept_bytes(data, tmp_path, doi, title, pages, label):
 
 
 def browser_download(doi, blocked_links, tmp_path, title, pages, ebsco_profile):
-    """Walk the browser candidates in one throwaway tab. Returns the URL kept.
-
-    The tab is opened at the end of the front window, never focused, and closed
-    again whatever happens.
-    """
+    """Walk the browser candidates in the worker window's tab. Returns the URL kept."""
     if sys.platform != "darwin":
         log("The Chrome step is macOS only, skipping")
         return None
@@ -483,16 +635,23 @@ def browser_download(doi, blocked_links, tmp_path, title, pages, ebsco_profile):
 
 def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
                    force=False, use_playwright=False, use_browser=True,
-                   ebsco_profile=""):
+                   ebsco_profile="", accept_xml=False):
     """Returns (path, candidates). path is None on failure.
 
-    `candidates` is an ordered list of (url, note) for manual download.
+    `candidates` is an ordered list of (url, note) for manual download. With
+    `accept_xml`, path can be a `.jats.xml` file: the walk stops at Springer's XML
+    instead of carrying on to look for a PDF.
     """
     doi = clean_doi(doi)
     cache_path = doi_to_cache_path(doi, cache_dir)
     if not force and validate_pdf(cache_path):
         log("Found in cache")
         return cache_path, []
+    xml_path = doi_to_xml_path(doi, cache_dir)
+    if accept_xml and not force and os.path.exists(xml_path):
+        log("Found the XML in cache")
+        log(f"FULLTEXT_XML={xml_path}")
+        return xml_path, []
 
     os.makedirs(cache_dir, exist_ok=True)
     meta = crossref_metadata(doi)
@@ -514,6 +673,25 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
             log("Downloaded via fetchpdf")
             return cache_path, candidates
 
+        keys = load_key_file()
+        prefix = doi.split("/", 1)[0]
+        if keys.get("WILEY_TDM_TOKEN") and prefix in WILEY_PREFIXES and not _wiley_off:
+            log("Trying Wiley's text-and-data-mining API...")
+            if accept_bytes(wiley_tdm_pdf(doi, keys["WILEY_TDM_TOKEN"], cache_dir), tmp_path,
+                            doi, meta.get("title") or title, meta.get("pages"), "Wiley TDM"):
+                os.replace(tmp_path, cache_path)
+                log("Downloaded via Wiley's TDM API")
+                return cache_path, candidates
+        if (keys.get("SPRINGER_OA_API_KEY") and prefix in SPRINGER_NATURE_PREFIXES
+                and not _springer_off):
+            log("Trying the Springer Nature Open Access API...")
+            found = springer_oa_xml(doi, meta.get("title") or title,
+                                    keys["SPRINGER_OA_API_KEY"], cache_dir, force)
+            if found:
+                log(f"FULLTEXT_XML={found}")
+                if accept_xml:
+                    return found, candidates
+
         if meta.get("title") or title:
             log("Searching the web for a PDF...")
             accepted, web_blocked = web_download(
@@ -526,7 +704,7 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
         else:
             log("No title available, skipping the web-search step")
 
-        api_keys = serpapi_keys(load_key_file())
+        api_keys = serpapi_keys(keys)
         query = build_scholar_query(query_title, meta.get("authors"))
         if api_keys and query:
             log(f"Searching Google Scholar for: {query[:80]}")
@@ -575,6 +753,9 @@ def main():
                         help="Let fetchpdf render JS-heavy pages in a headless browser")
     parser.add_argument("--no-browser", action="store_true",
                         help="Skip the step that fetches through the user's signed-in Chrome")
+    parser.add_argument("--accept-xml", action="store_true",
+                        help="Stop at Springer's JATS XML rather than look further for a "
+                             "PDF: exit 3, with the path on stderr as FULLTEXT_XML=<path>")
     parser.add_argument("--open", action="store_true",
                         help="On failure, open the publisher page in the browser")
     args = parser.parse_args()
@@ -596,8 +777,11 @@ def main():
         use_playwright=args.playwright,
         use_browser=not args.no_browser,
         ebsco_profile=keys.get("INSTITUTION_EBSCO_PROFILE", ""),
+        accept_xml=args.accept_xml,
     )
 
+    if path and path.endswith(".xml"):
+        sys.exit(3)
     if path:
         print(os.path.abspath(path), file=STDOUT)
         sys.exit(0)

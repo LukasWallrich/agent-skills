@@ -82,15 +82,17 @@ the endpoint URL.
 Downloads academic PDFs by DOI for claim verification: local cache, then the
 [`fetchpdf`](https://github.com/The-Metascience-Observatory/fetchpdf) open-access chain
 (OpenAlex, Unpaywall, PubMed Central, Crossref links, preprint servers, repositories,
-publisher routes), then a free web search for author copies (`ddgs`: `<DOI> pdf`, then the
+publisher routes), then Wiley's text-and-data-mining API and the Springer Nature Open Access
+API when their keys are set, then a free web search for author copies (`ddgs`: `<DOI> pdf`, then the
 quoted title), then Google Scholar via SerpAPI, then your own running, signed-in Chrome
 for whatever is paywalled. Every downloaded PDF is checked against the requested DOI, title
 and page range, so a topically-similar paper or a first-page preview is rejected and the
-search continues rather than being cached under the wrong DOI.
+search continues rather than being cached under the wrong DOI. Springer's API returns JATS XML
+rather than a PDF, so that text comes back as a separate, documented outcome (`--accept-xml`).
 
 The Chrome step needs no manual step: on macOS, with Chrome running and *View ▸ Developer ▸
-Allow JavaScript from Apple Events* switched on, it opens one unfocused tab, walks the
-publisher's PDF URLs and EBSCOhost through your existing logins, and closes the tab again.
+Allow JavaScript from Apple Events* switched on, it uses one tab of its own minimised window to
+walk the publisher's PDF URLs and EBSCOhost through your existing logins.
 Headless browsers are Cloudflare-flagged, so it drives the real Chrome via `osascript`. Set
 `INSTITUTION_EBSCO_PROFILE` to your library's EBSCO cluster id to include EBSCO.
 `--no-browser` leaves the run entirely non-interactive.
