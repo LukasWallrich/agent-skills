@@ -1,7 +1,7 @@
 ---
 name: download-paper
 description: Download academic PDFs by DOI for claim verification. Use when you need to read/verify the content of an academic paper and have its DOI. Downloads through the fetchpdf open-access chain (Unpaywall, PMC, preprint servers, repositories), Wiley and Springer Nature APIs when their keys are set, a Google Scholar step, and the user's real signed-in Chrome for paywalled sources; when a publisher bot-blocks free content, falls back to Wayback Machine captures, the T3 collaborative browser, and NCBI E-utilities — checking every PDF against the requested DOI.
-allowed-tools: Bash(*download_paper.py*), Bash(*institutional_fetch*), Bash(pdftotext*), Bash(*uvx browser-use*), Bash(*browser-use*), Bash(osascript*), Bash(curl*), Bash(file *), Bash(ls *), Bash(pandoc*), t3-code_preview_*
+allowed-tools: Bash(*download_paper.py*), Bash(*institutional_fetch*), Bash(pdftotext*), Bash(*uvx browser-use*), Bash(*browser-use*), Bash(osascript*), Bash(curl*), Bash(file *), Bash(ls *), Bash(pandoc*), Bash(sed *), t3-code_preview_*
 ---
 
 # Download & Verify Academic Papers
