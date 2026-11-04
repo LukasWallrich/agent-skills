@@ -1,8 +1,7 @@
 """The web-search, publisher-API, Google Scholar and Chrome steps, with network and Chrome mocked.
 
 Run with:
-    cd /Users/lukaswallrich/Documents/Coding/agent-skills/download-paper && \
-      /Users/lukaswallrich/.local/bin/uv run --no-project --with pytest --with requests \
+    cd download-paper && uv run --no-project --with pytest --with requests \
       pytest test_download_paper.py
 """
 

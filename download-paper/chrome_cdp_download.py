@@ -30,20 +30,22 @@ first (see SKILL.md).
 
 Access is switched on with the institution's OpenAthens redirector:
     https://go.openathens.net/redirector/<institution-domain>?url=<target>
-One hop, and it works across Elsevier, T&F, Wiley, OUP, AAAS, SAGE and others
-(if the institution subscribes). No per-publisher SSO dialog.
+One hop, with no per-publisher SSO dialog. Confirmed on Elsevier only, and it
+reaches only what the institution subscribes to.
 
 Usage
 -----
     chrome_cdp_download.py --doi 10.1016/j.lindif.2026.102967 --out ./pdfs
     chrome_cdp_download.py --doi-file dois.txt --out ./pdfs
-    INSTITUTION_OPENATHENS_DOMAIN=bbk.ac.uk chrome_cdp_download.py --doi ...
+    INSTITUTION_OPENATHENS_DOMAIN=example.ac.uk chrome_cdp_download.py --doi ...
 
 Every PDF passes download_paper.py's identity check against the Crossref title.
 A DOI with no title (not in Crossref and no --title) is not fetched.
 
 Success prints the path of a verified PDF (one per DOI). Exit code 0 if every
-DOI produced a file, 1 otherwise. Diagnostics go to stderr. A PDF already in
+DOI produced a file, 1 otherwise, 2 if this machine cannot run the route: it
+needs Chrome or Chromium, a profile to copy and a display (macOS and Linux).
+Diagnostics go to stderr. A PDF already in
 --out is re-checked rather than trusted, and does not count towards the cap, so
 a rerun picks up where the last one stopped.
 
@@ -52,7 +54,7 @@ and download_paper.py's Chrome step cannot reach the user's Chrome.
 
 Options
 -------
---institution DOMAIN   OpenAthens redirector slug, e.g. `bbk.ac.uk`. Defaults to
+--institution DOMAIN   OpenAthens redirector slug, e.g. `example.ac.uk`. Defaults to
                        $INSTITUTION_OPENATHENS_DOMAIN.
 --institution-name N   Name to type into Springer's picker. Defaults to
                        $INSTITUTION_NAME.
@@ -60,8 +62,10 @@ Options
                        (otherwise Crossref).
 --max-fetches N        Most DOIs to fetch from publishers in one run (default 30).
                        Licences often prohibit systematic downloading.
---chrome PATH          Chrome binary (default: the macOS Google Chrome.app).
---profile DIR          Chrome profile directory to copy (default: `Default`).
+--chrome PATH          Chrome or Chromium binary (default: found by platform).
+--profile-root DIR     Directory holding the browser's profiles and `Local State`
+                       (default: found by platform).
+--profile DIR          Profile directory to copy (default: `Default`).
 --keep-profile         Do not delete the throwaway profile (debugging).
 --no-verify            Keep the first PDF fetched without an identity check; the
                        printed path is then not verified.
@@ -88,8 +92,17 @@ from urllib.request import urlopen
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import download_paper as dp
 
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PROFILE_ROOT = Path.home() / "Library/Application Support/Google/Chrome"
+#: (browser, profile root) to look for on each platform, in order.
+BROWSERS = {
+    "darwin": [("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                Path.home() / "Library/Application Support/Google/Chrome")],
+    "linux": [(name, Path.home() / ".config" / folder)
+              for name, folder in (("google-chrome", "google-chrome"),
+                                   ("google-chrome-stable", "google-chrome"),
+                                   ("chromium", "chromium"),
+                                   ("chromium-browser", "chromium"))],
+}
+UNAVAILABLE = 2
 DEFAULT_MAX_FETCHES = 30
 #: Hosts and paths of the sign-in hops between a redirector and the publisher.
 LOGIN_MARKERS = ("openathens", "idp.", "saml", "login.", "wayf")
@@ -133,26 +146,33 @@ def env_value(name, default=""):
 # ---------------------------------------------------------------------------
 # Chrome + profile
 # ---------------------------------------------------------------------------
-def find_chrome(explicit=None):
-    if explicit:
-        return explicit
-    if Path(CHROME).exists():
-        return CHROME
-    raise SystemExit("Google Chrome not found; pass --chrome PATH")
+def find_browser(args):
+    """(binary, profile root) of a browser this route can use, or None if there is none."""
+    if sys.platform == "linux" and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        log("This route needs a display: it runs a headed browser, because publishers "
+            "often refuse headless ones.")
+        return None
+    for binary, root in BROWSERS.get(sys.platform, [(None, None)]):
+        binary, root = args.chrome or binary, args.profile_root or root
+        if binary and root and shutil.which(binary) and (Path(root) / args.profile).is_dir():
+            return shutil.which(binary), Path(root)
+    log(f"No Chrome or Chromium with a `{args.profile}` profile found on this machine. "
+        "Pass --chrome and --profile-root if they are elsewhere.")
+    return None
 
 
-def copy_profile(profile: str, dest: Path):
+def copy_profile(root: Path, profile: str, dest: Path):
     """Copy only what Chrome needs to hold the cookie jar.
 
     Cookies live in `Default/Cookies` on some builds and `Default/Network/Cookies`
     on others; Local State carries the key material, so it must come too.
     """
-    src = PROFILE_ROOT / profile
+    src = root / profile
     if not src.is_dir():
-        raise SystemExit(f"Chrome profile not found: {src}")
+        raise SystemExit(f"Browser profile not found: {src}")
     dst = dest / "Default"
     (dst / "Network").mkdir(parents=True, exist_ok=True)
-    state = PROFILE_ROOT / "Local State"
+    state = root / "Local State"
     if state.exists():
         shutil.copy2(state, dest / "Local State")
     for cand, target in [(src / "Cookies", dst / "Cookies"),
@@ -492,7 +512,7 @@ def plan(dois, args):
     return present, untitled, pending
 
 
-def fetch_all(pending, args):
+def fetch_all(pending, args, browser):
     """Run Chrome for `pending`. Returns how many DOIs produced no file.
 
     Python's default SIGTERM skips `finally`, which would leave the cookie copy on
@@ -527,9 +547,10 @@ def fetch_all(pending, args):
 
     failures = 0
     try:
-        copy_profile(args.profile, work)
+        binary, root = browser
+        copy_profile(root, args.profile, work)
         port = free_port()
-        procs.append(launch(work, find_chrome(args.chrome), port))
+        procs.append(launch(work, binary, port))
         with sync_playwright() as pw:
             browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
             ctx = browser.contexts[0]
@@ -559,6 +580,7 @@ def main():
     ap.add_argument("--title", default="")
     ap.add_argument("--max-fetches", type=int, default=DEFAULT_MAX_FETCHES)
     ap.add_argument("--chrome", default=None)
+    ap.add_argument("--profile-root", default=None)
     ap.add_argument("--profile", default="Default")
     ap.add_argument("--keep-profile", action="store_true")
     ap.add_argument("--no-verify", action="store_true")
@@ -578,7 +600,12 @@ def main():
     for out in present:
         print(out, flush=True)
     to_fetch, over_cap = pending[:args.max_fetches], pending[args.max_fetches:]
-    failures = fetch_all(to_fetch, args) if to_fetch else 0
+    failures = 0
+    if to_fetch:
+        browser = find_browser(args)
+        if not browser:
+            sys.exit(UNAVAILABLE)
+        failures = fetch_all(to_fetch, args, browser)
     if over_cap:
         log(f"Stopped at --max-fetches {args.max_fetches}: {len(over_cap)} DOIs not attempted. "
             "Re-running continues from files saved so far, but retries the failures first; "

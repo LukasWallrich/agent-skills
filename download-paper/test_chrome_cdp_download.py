@@ -1,8 +1,7 @@
 """chrome_cdp_download's identity, output and cap logic, with Chrome mocked.
 
 Run with:
-    cd /Users/lukaswallrich/Documents/Coding/agent-skills/download-paper && \
-      /Users/lukaswallrich/.local/bin/uv run --no-project --with pytest --with requests \
+    cd download-paper && uv run --no-project --with pytest --with requests \
       pytest test_chrome_cdp_download.py
 """
 
@@ -37,7 +36,8 @@ class Ctx:
 def make_args(out, **over):
     values = dict(out=str(out), no_verify=False, institution="bbk.ac.uk", springer_wayf=False,
                   institution_name="Birkbeck College", title="", doi=[], doi_file=None,
-                  max_fetches=30, chrome=None, profile="Default", keep_profile=False)
+                  max_fetches=30, chrome=None, profile_root=None, profile="Default",
+                  keep_profile=False)
     return types.SimpleNamespace(**{**values, **over})
 
 
@@ -163,7 +163,8 @@ def test_a_saved_file_is_rechecked_not_trusted(monkeypatch, tmp_path):
 
 def run_main(monkeypatch, argv):
     fetched = []
-    monkeypatch.setattr(cdp, "fetch_all", lambda pending, args: fetched.extend(pending) or 0)
+    monkeypatch.setattr(cdp, "find_browser", lambda args: ("chrome", "root"))
+    monkeypatch.setattr(cdp, "fetch_all", lambda pending, args, browser: fetched.extend(pending) or 0)
     monkeypatch.setattr(sys, "argv", ["chrome_cdp_download.py", *argv])
     with pytest.raises(SystemExit) as stop:
         cdp.main()
@@ -208,6 +209,61 @@ def test_springer_wayf_needs_a_name(monkeypatch, tmp_path):
     monkeypatch.setattr(cdp, "env_value", lambda name, default="": default)
     code, fetched = run_main(monkeypatch, ["--doi", DOI, "--springer-wayf", "--out", str(tmp_path)])
     assert "institution-name" in str(code) and not fetched
+
+
+# --- whether this machine can run the route ----------------------------------
+
+@pytest.fixture
+def linux(monkeypatch, tmp_path):
+    """A Linux desktop with no browser; `which` finds only what a test adds."""
+    found = {}
+    monkeypatch.setattr(cdp.sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(cdp.shutil, "which", lambda name: found.get(name))
+    monkeypatch.setattr(cdp, "BROWSERS", {"linux": [("google-chrome", tmp_path / "gc"),
+                                                    ("chromium", tmp_path / "cr")]})
+    return found
+
+
+def test_no_browser_means_unavailable(linux, tmp_path):
+    assert cdp.find_browser(make_args(tmp_path)) is None
+
+
+def test_a_browser_without_a_profile_is_passed_over(linux, tmp_path):
+    linux.update({"google-chrome": "/bin/gc", "chromium": "/bin/cr"})
+    (tmp_path / "cr" / "Default").mkdir(parents=True)
+    assert cdp.find_browser(make_args(tmp_path)) == ("/bin/cr", tmp_path / "cr")
+
+
+def test_no_display_means_unavailable(linux, monkeypatch, tmp_path):
+    linux["google-chrome"] = "/bin/gc"
+    (tmp_path / "gc" / "Default").mkdir(parents=True)
+    monkeypatch.delenv("DISPLAY")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert cdp.find_browser(make_args(tmp_path)) is None
+
+
+def test_explicit_paths_work_on_an_unlisted_platform(monkeypatch, tmp_path):
+    monkeypatch.setattr(cdp.sys, "platform", "freebsd")
+    monkeypatch.setattr(cdp.shutil, "which", lambda name: name)
+    (tmp_path / "Default").mkdir()
+    args = make_args(tmp_path, chrome="/opt/chrome", profile_root=str(tmp_path))
+    assert cdp.find_browser(args) == ("/opt/chrome", tmp_path)
+
+
+def test_unavailable_exits_2_and_saved_files_need_no_browser(monkeypatch, tmp_path):
+    crossref(monkeypatch)
+    monkeypatch.setattr(cdp, "find_browser", lambda args: None)
+    monkeypatch.setattr(sys, "argv", ["x", "--doi", DOI, "--out", str(tmp_path)])
+    with pytest.raises(SystemExit) as stop:
+        cdp.main()
+    assert stop.value.code == 2
+
+    monkeypatch.setattr(cdp.dp, "verify_identity", lambda *a: types.SimpleNamespace(ok=True))
+    (tmp_path / "10.1007_abc.pdf").write_bytes(PDF)
+    with pytest.raises(SystemExit) as stop:
+        cdp.main()
+    assert stop.value.code == 0
 
 
 # --- reporting ---------------------------------------------------------------

@@ -164,13 +164,17 @@ yourself.
 
 ## Step 1c: Paywalled PDFs — one command, no exclusive Chrome
 
-When the paper is not free and the Chrome step in Step 1 stalls or is skipped, use:
+When the paper is not free and the Chrome step in Step 1 stalls or is skipped, use this. It
+needs Chrome or Chromium with a signed-in profile, and a display. Exit code 2 means this machine
+lacks one of those, so go to Step 3. It has been run on macOS only; the Linux lookup
+(`google-chrome`, `chromium`) is untested, and Windows is not supported. `--chrome` and
+`--profile-root` point it at a browser elsewhere.
 
 ```bash
 $SKILL_DIR/chrome_cdp_download.py --doi "10.1016/j.lindif.2026.102967" --out ./pdfs
 ```
 
-Why this beats the osascript route: Apple Events reach only the newest
+Why this beats the osascript route on macOS: Apple Events reach only the newest
 `Google Chrome.app` instance, so one Playwright-launched Chrome anywhere on the machine
 blocks it. This script instead copies `Local State` + `Default/Cookies` into a throwaway
 `--user-data-dir`, launches that as its own offscreen instance with `--remote-debugging-port`,
@@ -187,10 +191,12 @@ How it gets in: the **OpenAthens redirector** is a universal institutional switc
 https://go.openathens.net/redirector/<institution-domain>?url=<article-or-doi-url>
 ```
 
-Set `INSTITUTION_OPENATHENS_DOMAIN` (e.g. `bbk.ac.uk`) or pass `--institution`. One hop
+If your institution uses OpenAthens, set `INSTITUTION_OPENATHENS_DOMAIN` (e.g. `example.ac.uk`)
+or pass `--institution`. One hop
 authenticates the session on the publisher domain; no per-publisher *Access through your
-institution* dialog. It works on Elsevier, T&F, Wiley, OUP, AAAS, MIT Press and SAGE —
-**subject to the institution's entitlement**, which is the real limit (see Step 3b).
+institution* dialog. Institutional access through it is confirmed on Elsevier only, and is
+**subject to the institution's entitlement**, which is the real limit (see Step 3b). Without OpenAthens, leave it unset: the script then goes to the publisher
+directly, which helps only where the copied profile already holds that publisher's session.
 
 How it gets the bytes: navigate to the PDF URL and read the PDF viewer's own response
 (`page.on('response')` → `response.body()`), or the download event. Do **not** use
@@ -261,11 +267,10 @@ Check the library's A–Z list before spending time.
 ### 3b: When the institution simply has no entitlement
 
 Expect this to be the common outcome for a recent-paper batch, and say so plainly rather
-than retrying flows. Patterns seen in one real batch of 93:
+than retrying flows. Patterns from one batch of 93 at one UK institution; yours will differ:
 
 - **Springer (10.1007/10.1057)** and **Emerald (10.1108)**: pages show *Buy article* /
-  *Pay-Per-View* even after OpenAthens. Many UK institutions lost or never had the
-  Springer deal.
+  *Pay-Per-View* even after OpenAthens.
 - **SAGE (10.1177)**: the session can say *I have access via: <institution>* and still
   return 403 for `/doi/pdf/…` and redirect `/doi/epdf/…` to `/doi/abs/`. Google Scholar's
   CASA hop does not change this. Treat SAGE PDFs as frequently unavailable even when HTML
@@ -367,11 +372,11 @@ Keys are read from the environment, then from `~/.claude/api_keys.env`.
 - `INSTITUTION_EBSCO_PROFILE` — the library's EBSCO cluster id, the `<cluster>` in the
   `research.ebsco.com/c/<cluster>/...` URL Chrome lands on after an institutional login.
   Enables the EBSCO candidate in the Chrome step.
-- `INSTITUTION_OPENATHENS_DOMAIN` — the OpenAthens redirector slug, e.g. `bbk.ac.uk`
+- `INSTITUTION_OPENATHENS_DOMAIN` — the OpenAthens redirector slug, e.g. `example.ac.uk`
   (not the publisher URL). Enables `chrome_cdp_download.py`'s one-hop institutional
   access on every publisher domain. `--institution` overrides it.
 - `INSTITUTION_NAME` — the institution's display name for Springer's WAYF picker
-  (e.g. `Birkbeck College`); only used with `--springer-wayf`. `--institution-name` overrides it.
+  (e.g. `Example University`); only used with `--springer-wayf`. `--institution-name` overrides it.
 - `WILEY_TDM_TOKEN`, `SPRINGER_OA_API_KEY` — enable the publisher APIs. `SPRINGER_META_API_KEY`
   gives metadata only, and this skill does not use it.
 - `CORE_API_KEY`, `ELSEVIER_API_KEY`, `OPENALEX_API_KEY` — optional; passed to fetchpdf's
