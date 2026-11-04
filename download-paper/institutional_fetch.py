@@ -119,12 +119,22 @@ def extra_chrome_instances():
             if line.split(None, 1)[-1].startswith(main + " --")]
 
 
-def wait_for_one_chrome(timeout=900):
-    """Apple Events reach only the newest instance, so wait until it is the user's."""
+def wait_for_one_chrome(timeout=120):
+    """Apple Events reach only the newest instance, so wait until it is the user's.
+
+    This never succeeds while another agent's Playwright Chrome is open, and
+    waiting the old 15 minutes just burned the caller's budget. Two minutes,
+    then a message that names the way round it: chrome_cdp_download.py drives a
+    copy of this profile over CDP, so it does not need exclusivity.
+    """
     deadline = time.time() + timeout
     while extra_chrome_instances():
         if time.time() > deadline:
-            raise ChromeError("another Google Chrome instance has been running for 15 minutes")
+            raise ChromeError(
+                "another Google Chrome.app instance (likely one Playwright launched) "
+                "is running, so Apple Events cannot reach the user's Chrome. Close it, "
+                "or use chrome_cdp_download.py, which drives a copy of the profile "
+                "over CDP instead.")
         time.sleep(20)
 
 

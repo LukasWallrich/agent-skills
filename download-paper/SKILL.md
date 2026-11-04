@@ -1,7 +1,7 @@
 ---
 name: download-paper
 description: Download academic PDFs by DOI for claim verification. Use when you need to read/verify the content of an academic paper and have its DOI. Downloads through the fetchpdf open-access chain (Unpaywall, PMC, preprint servers, repositories), Wiley and Springer Nature APIs when their keys are set, a Google Scholar step, and the user's real signed-in Chrome for paywalled sources; when a publisher bot-blocks free content, falls back to Wayback Machine captures, the T3 collaborative browser, and NCBI E-utilities — checking every PDF against the requested DOI.
-allowed-tools: Bash(*download_paper.py*), Bash(*institutional_fetch*), Bash(pdftotext*), Bash(*uvx browser-use*), Bash(*browser-use*), Bash(osascript*), Bash(curl*), Bash(file *), Bash(ls *), Bash(pandoc*), Bash(sed *), t3-code_preview_*
+allowed-tools: Bash(*download_paper.py*), Bash(*institutional_fetch*), Bash(*chrome_cdp_download.py*), Bash(pdftotext*), Bash(*uvx browser-use*), Bash(*browser-use*), Bash(osascript*), Bash(curl*), Bash(file *), Bash(ls *), Bash(pandoc*), Bash(sed *), t3-code_preview_*
 ---
 
 # Download & Verify Academic Papers
@@ -154,6 +154,66 @@ pandoc -f jats -t html5 --standalone --metadata title="..." paper.xml -o paper.h
 Pandoc's JATS reader silently drops the back matter — append the `<ref-list>` from the XML
 yourself.
 
+## Step 1c: Paywalled PDFs — one command, no exclusive Chrome
+
+When the paper is not free and the Chrome step in Step 1 stalls or is skipped, use:
+
+```bash
+$SKILL_DIR/chrome_cdp_download.py --doi "10.1016/j.lindif.2026.102967" --out ./pdfs
+```
+
+Why this beats the osascript route: Apple Events reach only the newest
+`Google Chrome.app` instance, so one Playwright-launched Chrome anywhere on the machine
+blocks it. This script instead copies `Local State` + `Default/Cookies` into a throwaway
+`--user-data-dir`, launches that as its own offscreen instance with `--remote-debugging-port`,
+and drives it with Playwright over CDP. Chrome itself decrypts the cookies (Chrome 127+
+jar values cannot be decrypted in Python) and the user's window is untouched.
+
+It does not run alongside the osascript route: while it runs, its Chrome is the newest
+instance, so Step 1's Chrome step and `institutional_fetch.py` cannot reach the user's
+Chrome. Do not start them at the same time.
+
+How it gets in: the **OpenAthens redirector** is a universal institutional switch —
+
+```
+https://go.openathens.net/redirector/<institution-domain>?url=<article-or-doi-url>
+```
+
+Set `INSTITUTION_OPENATHENS_DOMAIN` (e.g. `bbk.ac.uk`) or pass `--institution`. One hop
+authenticates the session on the publisher domain; no per-publisher *Access through your
+institution* dialog. It works on Elsevier, T&F, Wiley, OUP, AAAS, MIT Press and SAGE —
+**subject to the institution's entitlement**, which is the real limit (see Step 3b).
+
+How it gets the bytes: navigate to the PDF URL and read the PDF viewer's own response
+(`page.on('response')` → `response.body()`), or the download event. Do **not** use
+`ctx.request.get` or same-origin `fetch` for publisher PDFs — they carry the wrong
+fingerprint and get 403/HTML challenges even with valid cookies.
+
+Every PDF goes through the same identity check as Step 1, against the Crossref title. A
+DOI that is not in Crossref needs `--title`, which works with a single `--doi` only.
+
+**Batches stop at 30 publisher fetches per run** (`--max-fetches`). Library licences often
+prohibit systematic downloading, and a publisher can respond by blocking the institution, so
+report the cap to the user rather than raising it or looping to get round it. PDFs already in
+`--out` are re-checked and do not count.
+
+A failed DOI's log says whether it stopped at a sign-in page (the Chrome session is missing
+or expired) or reached the publisher with no PDF (likely no entitlement).
+
+Options: `--doi-file dois.txt`, `--profile "Profile 1"`, `--springer-wayf`,
+`--institution-name`, `--keep-profile`. `--no-verify` skips the identity check, so its
+output needs a hand check. Exit 0 only if every DOI produced a file.
+
+### Springer's own picker (only if entitled)
+
+`wayf.springernature.com/?redirect_uri=<article>` needs real Playwright clicks:
+`#autocomplete-input` → type the institution name → click
+`.eds-c-autocomplete__item >> nth=0` → `#institution-submit`. `.click()` on the item with a
+plain JS `element.click()` does nothing; use Playwright's click. After it lands, a page
+still showing *Buy article* means the institution has no entitlement for that journal —
+stop, it is not a flow bug. `--springer-wayf` does this with `INSTITUTION_NAME` or
+`--institution-name`.
+
 ## Step 2: Read the downloaded PDF
 
 ```bash
@@ -172,17 +232,45 @@ The script lists its candidate URLs on stderr, each with a note:
 2. `[Scholar link, a different paper]` — fetched, but not this DOI's paper. Skip it.
 3. `[publisher page]` — `https://doi.org/DOI_HERE`, which honours institutional access
 
-Three manual routes (Step 1b's automated routes come first for free content; these are for
+Four manual routes (Step 1b's automated routes come first for free content; these are for
 paywalled papers and truly unreachable copies), in the order worth trying.
 
-### 3a: Sign in at this publisher, then re-run
+### 3a: Get the institution's session into Chrome
 
-One OpenAthens handshake covers one publisher. A login at publisher A does not
-authenticate publisher B, and the Chrome step can only use sessions that already exist.
-Ask the user to open the `[publisher page]` URL, click *Access through your institution*,
-and say when they are through; then re-run Step 1 with `--force`.
+`chrome_cdp_download.py` needs no per-publisher sign-in: the OpenAthens redirector above
+authenticates any publisher domain in one hop, provided Chrome is signed in to OpenAthens
+at all. If its log reports a sign-in page, ask the user to sign in to OpenAthens in Chrome.
 
-### 3b: Read the paper off the page
+Step 1's Chrome step does not use the redirector, and sessions the script opens stay in its
+throwaway copy. For that step, one login still covers one publisher: ask the user to open
+the `[publisher page]` URL, click *Access through your institution* and say when they are
+through; then re-run Step 1 with `--force`.
+
+If a DOI still lands on "Buy article" / "Pay-per-view" after signing in, the institution
+does not subscribe to that journal (or that year), and another sign-in will not change it.
+Check the library's A–Z list before spending time.
+
+### 3b: When the institution simply has no entitlement
+
+Expect this to be the common outcome for a recent-paper batch, and say so plainly rather
+than retrying flows. Patterns seen in one real batch of 93:
+
+- **Springer (10.1007/10.1057)** and **Emerald (10.1108)**: pages show *Buy article* /
+  *Pay-Per-View* even after OpenAthens. Many UK institutions lost or never had the
+  Springer deal.
+- **SAGE (10.1177)**: the session can say *I have access via: <institution>* and still
+  return 403 for `/doi/pdf/…` and redirect `/doi/epdf/…` to `/doi/abs/`. Google Scholar's
+  CASA hop does not change this. Treat SAGE PDFs as frequently unavailable even when HTML
+  full text is not.
+- **Cambridge (10.1017)**, **OUP handbook chapters (10.1093/oxfordhb, 10.1093/oso)**:
+  abstract-only for non-subscribed titles.
+
+`requests` + the exported cookie jar is **not** a fallback: Cloudflare/Akamai answer 403
+with an HTML challenge for SAGE, Wiley and T&F even with a valid `cf_clearance` and a
+matching User-Agent, because the cookie is bound to the browser's fingerprint. Keep the
+bytes in the browser.
+
+### 3c: Read the paper off the page
 
 When no PDF exists to download (a landing page with the full text in HTML, an
 Academia.edu or ResearchGate record), read the content instead. `browser-use --browser
@@ -198,7 +286,7 @@ uvx browser-use close          # always close when done
 `browser-use` is unreliable against heavy JS apps such as the EBSCO viewer: `state` and
 `eval` come back empty there. Use it for ordinary publisher pages.
 
-### 3c: Run one route on its own
+### 3d: Run one route on its own
 
 `institutional_fetch.py` holds the Chrome layer Step 1 uses, and its CLI runs a single
 route against one DOI — useful for debugging a route or for the cookie-jar route, which
@@ -215,6 +303,14 @@ Success prints the verified PDF's path on stdout (same contract as `download_pap
 
 ### Critical gotchas (learned the hard way)
 
+- **Apple Events only reach the newest `Google Chrome.app`.** One Playwright-launched Chrome
+  anywhere on the machine makes `institutional_fetch.py` wait (now capped at 2 minutes,
+  with an error naming `chrome_cdp_download.py`) even though the real profile is idle.
+  Use the CDP route rather than hunting for the offending process.
+- **A non-Latin title cannot be identity-checked by title words.** Arabic, Chinese and
+  Cyrillic titles normalise to almost nothing, so a 0% title match is not evidence the PDF
+  is wrong. The identity check can then refuse the right paper: re-run
+  `chrome_cdp_download.py` with `--no-verify` and read page 1 by hand.
 - **Verify page 1 against the DOI or title for anything you fetch by hand.** Title-based
   search returns topically-similar papers under the DOI you asked for, and a mislabelled
   PDF silently corrupts whatever dataset it lands in. `download_paper.py` and
@@ -265,6 +361,11 @@ Keys are read from the environment, then from `~/.claude/api_keys.env`.
 - `INSTITUTION_EBSCO_PROFILE` — the library's EBSCO cluster id, the `<cluster>` in the
   `research.ebsco.com/c/<cluster>/...` URL Chrome lands on after an institutional login.
   Enables the EBSCO candidate in the Chrome step.
+- `INSTITUTION_OPENATHENS_DOMAIN` — the OpenAthens redirector slug, e.g. `bbk.ac.uk`
+  (not the publisher URL). Enables `chrome_cdp_download.py`'s one-hop institutional
+  access on every publisher domain. `--institution` overrides it.
+- `INSTITUTION_NAME` — the institution's display name for Springer's WAYF picker
+  (e.g. `Birkbeck College`); only used with `--springer-wayf`. `--institution-name` overrides it.
 - `WILEY_TDM_TOKEN`, `SPRINGER_OA_API_KEY` — enable the publisher APIs. `SPRINGER_META_API_KEY`
   gives metadata only, and this skill does not use it.
 - `CORE_API_KEY`, `ELSEVIER_API_KEY`, `OPENALEX_API_KEY` — optional; passed to fetchpdf's
