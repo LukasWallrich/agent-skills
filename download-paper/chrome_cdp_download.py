@@ -22,8 +22,11 @@ This script sidesteps that. It copies Chrome's cookie jar into a throwaway
 with a debugging port, and drives it over CDP with Playwright. Because the copy
 is another Chrome process, Chrome itself decrypts the cookies (Chrome 127+
 cookies cannot be decrypted in Python), and the user's own window is never
-touched. Everything then runs in a normal browser, which is what gets past
-Cloudflare/Akamai/Imperva where `requests` and headless browsers do not.
+touched. Everything then runs in a normal browser session, which publishers
+serve where they often refuse `requests` and headless browsers.
+
+Experimental: check the publisher terms and library licences that apply to you
+first (see SKILL.md).
 
 Access is switched on with the institution's OpenAthens redirector:
     https://go.openathens.net/redirector/<institution-domain>?url=<target>

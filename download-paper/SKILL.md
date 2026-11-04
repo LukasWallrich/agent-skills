@@ -6,6 +6,14 @@ allowed-tools: Bash(*download_paper.py*), Bash(*institutional_fetch*), Bash(*chr
 
 # Download & Verify Academic Papers
 
+> **Experimental, and your responsibility.** This skill explores possible routes to papers
+> the user may already be entitled to read; it is not a supported or endorsed access method.
+> Publisher terms, library licences and institutional policies can restrict automated access,
+> systematic downloading or the use of a signed-in session, even when you have a subscription.
+> Check the terms that apply to you before using the browser routes, and do not use them to get
+> round a paywall you have no entitlement to. Agents: use the open-access routes first, and raise
+> any doubt about permission with the user rather than working around it.
+
 `$SKILL_DIR` below is wherever this skill lives (e.g. `~/.claude/skills/download-paper`).
 
 ## Step 1: Try downloading the PDF
@@ -126,9 +134,9 @@ never as "no snapshot". A bulk script that hid these errors reported a false "0 
 
 ### Collaborative browser (T3 `preview_*` tools)
 
-A real Chromium with a genuine fingerprint passes Cloudflare challenges curl and headless
-Playwright cannot — Sage clears in seconds; OUP's turnstile loops forever on it, so don't
-grind that one. Recipe:
+This is an ordinary browser session, which some publishers serve when they refuse curl and
+headless Playwright. Sage loads in seconds; OUP's browser check loops forever, so don't grind
+that one. Recipe:
 
 1. `preview_navigate` to the article landing page (same origin as the PDF).
 2. `preview_evaluate`: same-origin `fetch(pdfUrl, {credentials:'include'})` →
@@ -186,8 +194,8 @@ institution* dialog. It works on Elsevier, T&F, Wiley, OUP, AAAS, MIT Press and 
 
 How it gets the bytes: navigate to the PDF URL and read the PDF viewer's own response
 (`page.on('response')` → `response.body()`), or the download event. Do **not** use
-`ctx.request.get` or same-origin `fetch` for publisher PDFs — they carry the wrong
-fingerprint and get 403/HTML challenges even with valid cookies.
+`ctx.request.get` or same-origin `fetch` for publisher PDFs — publishers often answer them
+with a 403 or an HTML check page even with valid cookies.
 
 Every PDF goes through the same identity check as Step 1, against the Crossref title. A
 DOI that is not in Crossref needs `--title`, which works with a single `--doi` only.
@@ -265,10 +273,8 @@ than retrying flows. Patterns seen in one real batch of 93:
 - **Cambridge (10.1017)**, **OUP handbook chapters (10.1093/oxfordhb, 10.1093/oso)**:
   abstract-only for non-subscribed titles.
 
-`requests` + the exported cookie jar is **not** a fallback: Cloudflare/Akamai answer 403
-with an HTML challenge for SAGE, Wiley and T&F even with a valid `cf_clearance` and a
-matching User-Agent, because the cookie is bound to the browser's fingerprint. Keep the
-bytes in the browser.
+`requests` + the exported cookie jar is **not** a fallback: SAGE, Wiley and T&F answer 403
+with an HTML check page even with valid session cookies. Keep the download in the browser.
 
 ### 3c: Read the paper off the page
 
@@ -324,8 +330,8 @@ Success prints the verified PDF's path on stdout (same contract as `download_pap
   Chrome step navigates the tab to the PDF URL first, waits until
   `document.contentType == 'application/pdf'`, then fetches same-origin with credentials —
   the asset host (`pdf.sciencedirectassets.com`, silverchair, `content.ebscohost.com`) is
-  same-origin once the tab is on it. The wait also lets Cloudflare, Anubis and Imperva
-  interstitials clear themselves, which they do in a real browser and never under curl.
+  same-origin once the tab is on it. The wait also covers publishers' browser-check pages,
+  which finish on their own in a normal browser and never under curl.
 - **Chrome's PDF viewer cannot return a Promise to AppleScript.** The in-page fetch parks
   its base64 on `window.__pdf`; a poll collects it and reads it back in 800k-character
   chunks. A plain `return await fetch(...)` yields an empty string with no error.

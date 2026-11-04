@@ -79,6 +79,14 @@ the endpoint URL.
 
 ### `download-paper`
 
+> **Experimental, and your responsibility.** This skill explores possible routes to papers
+> the user may already be entitled to read; it is not a supported or endorsed access method.
+> Publisher terms, library licences and institutional policies can restrict automated access,
+> systematic downloading or the use of a signed-in session, even when you have a subscription.
+> Check the terms that apply to you before using the browser routes, and do not use them to get
+> round a paywall you have no entitlement to. Agents: use the open-access routes first, and raise
+> any doubt about permission with the user rather than working around it.
+
 Downloads academic PDFs by DOI for claim verification: local cache, then the
 [`fetchpdf`](https://github.com/The-Metascience-Observatory/fetchpdf) open-access chain
 (OpenAlex, Unpaywall, PubMed Central, Crossref links, preprint servers, repositories,
@@ -93,7 +101,7 @@ rather than a PDF, so that text comes back as a separate, documented outcome (`-
 The Chrome step needs no manual step: on macOS, with Chrome running and *View ▸ Developer ▸
 Allow JavaScript from Apple Events* switched on, it uses one tab of its own minimised window to
 walk the publisher's PDF URLs and EBSCOhost through your existing logins.
-Headless browsers are Cloudflare-flagged, so it drives the real Chrome via `osascript`. Set
+Publishers often refuse headless browsers, so it drives the real Chrome via `osascript`. Set
 `INSTITUTION_EBSCO_PROFILE` to your library's EBSCO cluster id to include EBSCO.
 `--no-browser` leaves the run entirely non-interactive.
 
