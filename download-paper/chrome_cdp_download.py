@@ -5,6 +5,7 @@
 #   "fetchpdf @ git+https://github.com/The-Metascience-Observatory/fetchpdf@82a4c474178a3e4245da82542c3a25434674e48e",
 #   "playwright>=1.44",
 #   "requests",
+#   "boto3",
 # ]
 # ///
 """Download paywalled PDFs by DOI through the user's real Chrome sign-ins —
@@ -490,6 +491,43 @@ def read_dois(args):
     return list(dict.fromkeys(kept))
 
 
+def restore_shared(doi, out, record):
+    """Fill `out` from the local cache, Zotero or R2. Saves a publisher fetch when it can."""
+    cache_path = dp.doi_to_cache_path(doi, dp.DEFAULT_CACHE_DIR)
+    if dp.validate_pdf(cache_path) and dp.verify_identity(cache_path, doi, record["title"], record["pages"]).ok:
+        shutil.copyfile(cache_path, out)
+        return True
+    tmp = out.with_name(out.name + ".part")
+    found = dp.find_existing(doi, record["title"], record["pages"], str(tmp))
+    if not found:
+        tmp.unlink(missing_ok=True)
+        return False
+    tmp.replace(out)
+    keep_shared(doi, out, found)
+    return True
+
+
+def keep_shared(doi, out, route):
+    """Put a verified PDF in the local cache and, unless it came from there, in R2."""
+    cache_path = dp.doi_to_cache_path(doi, dp.DEFAULT_CACHE_DIR)
+    try:
+        os.makedirs(dp.DEFAULT_CACHE_DIR, exist_ok=True)
+        if os.path.realpath(out) != os.path.realpath(cache_path):
+            # Publish a whole cache entry, even if another process is reading it.
+            with tempfile.NamedTemporaryFile(dir=dp.DEFAULT_CACHE_DIR, prefix="part-", delete=False) as f:
+                part = Path(f.name)
+            try:
+                shutil.copyfile(out, part)
+                part.replace(cache_path)
+            finally:
+                part.unlink(missing_ok=True)
+    except OSError as error:
+        log(f"  PDF saved, but local cache copy failed: {error}")
+        return
+    if route != "r2":
+        dp.share_pdf(cache_path, doi, route)
+
+
 def plan(dois, args):
     """Sort DOIs without touching a publisher.
 
@@ -506,6 +544,9 @@ def plan(dois, args):
         elif out.exists() and out.stat().st_size > 20_000 and (
                 args.no_verify or dp.verify_identity(str(out), doi, record["title"], record["pages"]).ok):
             log(f"== {doi}\n  already present")
+            present.append(out)
+        elif not args.no_verify and restore_shared(doi, out, record):
+            log(f"== {doi}\n  already held, copied to --out")
             present.append(out)
         else:
             pending.append((doi, record))
@@ -557,6 +598,8 @@ def fetch_all(pending, args, browser):
             for doi, record in pending:
                 log(f"== {doi}")
                 if fetch_one(doi, ctx, args, record, log):
+                    if not args.no_verify:
+                        keep_shared(doi, output_path(args.out, doi), "chrome-cdp")
                     print(output_path(args.out, doi), flush=True)
                 else:
                     failures += 1

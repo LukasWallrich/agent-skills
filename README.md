@@ -87,7 +87,8 @@ the endpoint URL.
 > round a paywall you have no entitlement to. Agents: use the open-access routes first, and raise
 > any doubt about permission with the user rather than working around it.
 
-Downloads academic PDFs by DOI for claim verification: local cache, then the
+Downloads academic PDFs by DOI for claim verification: local cache, Zotero libraries and an
+optional private shared R2 cache, then the
 [`fetchpdf`](https://github.com/The-Metascience-Observatory/fetchpdf) open-access chain
 (OpenAlex, Unpaywall, PubMed Central, Crossref links, preprint servers, repositories,
 publisher routes), then Wiley's text-and-data-mining API and the Springer Nature Open Access
@@ -98,12 +99,18 @@ and page range, so a topically-similar paper or a first-page preview is rejected
 search continues rather than being cached under the wrong DOI. Springer's API returns JATS XML
 rather than a PDF, so that text comes back as a separate, documented outcome (`--accept-xml`).
 
+`--add-to-zotero` adds an individually requested paper to the personal library.
+`--zotero-find-pdf` also runs Zotero's Find Available PDF through the
+[local API plugin](download-paper/zotero-plugin/README.md). Do not use that lookup with
+custom resolvers that break copyright. The shared-cache helpers can seed an existing
+skill cache or harvest identity-checked papers from folders when requested.
+
 The Chrome step needs no manual step: on macOS, with Chrome running and *View ▸ Developer ▸
 Allow JavaScript from Apple Events* switched on, it uses one tab of its own minimised window to
 walk the publisher's PDF URLs and EBSCOhost through your existing logins.
 Publishers often refuse headless browsers, so it drives the real Chrome via `osascript`. Set
 `INSTITUTION_EBSCO_PROFILE` to your library's EBSCO cluster id to include EBSCO.
-`--no-browser` leaves the run entirely non-interactive.
+`--no-browser` skips Chrome; Zotero write authorization and PDF lookup can still open dialogs.
 
 `download_paper.py` is a `uv run --script` file: run it directly, and uv installs its
 dependencies on first use. `institutional_fetch.py` holds the Chrome layer, and its CLI

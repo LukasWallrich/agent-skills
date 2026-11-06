@@ -441,6 +441,7 @@ def test_springer_writes_only_the_verified_article(http, tmp_path, fetchpdf_stub
     (Response(200, jats(doi="10.1186/another")), False),
     (Response(200, jats(body="")), False),
     (Response(200, jats(body="too short")), False),
+    (Response(200, jats(title="")), False),
     (Response(401), True),
     (Response(403), True),
     (Response(429), True),

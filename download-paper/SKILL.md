@@ -1,7 +1,7 @@
 ---
 name: download-paper
-description: Download academic PDFs by DOI for claim verification. Use when you need to read/verify the content of an academic paper and have its DOI. Downloads through the fetchpdf open-access chain (Unpaywall, PMC, preprint servers, repositories), Wiley and Springer Nature APIs when their keys are set, a Google Scholar step, and the user's real signed-in Chrome for paywalled sources; when a publisher bot-blocks free content, falls back to Wayback Machine captures, the T3 collaborative browser, and NCBI E-utilities — checking every PDF against the requested DOI.
-allowed-tools: Bash(*download_paper.py*), Bash(*institutional_fetch*), Bash(*chrome_cdp_download.py*), Bash(pdftotext*), Bash(*uvx browser-use*), Bash(*browser-use*), Bash(osascript*), Bash(curl*), Bash(file *), Bash(ls *), Bash(pandoc*), Bash(sed *), t3-code_preview_*
+description: Download and verify academic PDFs by DOI, reuse Zotero and private caches, and add individually requested papers to Zotero. Use when a paper's content is needed or a scholarly claim must be checked. Supports open-access and entitled browser routes.
+allowed-tools: Bash(*download_paper.py*), Bash(*seed_shared_cache.py*), Bash(*harvest_pdfs.py*), Bash(*institutional_fetch*), Bash(*chrome_cdp_download.py*), Bash(pdftotext*), Bash(*uvx browser-use*), Bash(*browser-use*), Bash(osascript*), Bash(curl*), Bash(file *), Bash(ls *), Bash(pandoc*), Bash(sed *), t3-code_preview_*
 ---
 
 # Download & Verify Academic Papers
@@ -29,25 +29,27 @@ is pinned to a commit hash in the script's `# dependencies` header; edit that ha
 
 Sources, in order:
 
-1. Cache (a copy of this DOI fetched earlier)
-2. The fetchpdf open-access chain: OpenAlex, Unpaywall, PubMed Central, Europe PMC,
+1. Local cache (a copy of this DOI fetched earlier on this machine)
+2. Your Zotero libraries, personal first and then groups, through the local API
+3. The shared R2 cache (a copy fetched on any device)
+4. The fetchpdf open-access chain: OpenAlex, Unpaywall, PubMed Central, Europe PMC,
    Crossref links, Semantic Scholar, arXiv and other preprint servers, repository
    landing pages, publisher routes
-3. Publisher APIs, each only with its key and only for that publisher's DOIs, otherwise
+5. Publisher APIs, each only with its key and only for that publisher's DOIs, otherwise
    skipped without a word. See *Publisher APIs* below.
-4. Web search — the `ddgs` package (DuckDuckGo and other engines) for `<DOI> pdf`, then
+6. Web search — the `ddgs` package (DuckDuckGo and other engines) for `<DOI> pdf`, then
    `"<title>" pdf`. Finds author homepages, course pages and untagged institutional
    repositories that the open-access indexes miss. Only `.pdf` links whose result title
    matches the paper's title are downloaded (at most 5 per query). It is free, so it runs
    before the SerpAPI quota is spent. `ddgs` scrapes search engines; a rate limit or
    failure only means this step found nothing, and the walk carries on. Searches are spaced
    ≥ 1.5 s apart across runs, and non-empty results are cached for a week.
-5. Google Scholar via SerpAPI
-6. The user's running, signed-in Chrome — one worker tab walks the Scholar links plain
+7. Google Scholar via SerpAPI
+8. The user's running, signed-in Chrome — one worker tab walks the Scholar links plain
    HTTP could not fetch, then the publisher's own PDF URLs (canonical URL by DOI prefix,
    `citation_pdf_url` from the landing page, ScienceDirect `/pdfft`), then EBSCOhost
 
-Every downloaded PDF is checked against the requested DOI, title and page range. A
+Every PDF from steps 2–8 is checked against the requested DOI, title and page range. A
 different paper, or a publisher preview of only the first page, is discarded and the walk
 moves on to the next candidate.
 
@@ -69,8 +71,12 @@ Playwright at its own Chromium to avoid stalling this.
 Options:
 
 - `--title "Paper Title"` — the Google Scholar query; otherwise taken from Crossref
-- `--force` — re-download even if cached
-- `--no-browser` — skip the Chrome step (leaves the run entirely non-interactive)
+- `--force` — re-download, ignoring both caches and the library, and replace the shared copy
+- `--add-to-zotero` — add the paper to the personal library. See *Zotero* below.
+- `--zotero-find-pdf` — with `--add-to-zotero`, also try Zotero's Find Available PDF. See *Zotero* below.
+- `--no-browser` — skip the Chrome step. Zotero write authorization and
+  `--zotero-find-pdf` can still open dialogs; omit both Zotero write flags and `--open`
+  for an unattended run.
 - `--playwright` — let fetchpdf render JS-heavy pages in a headless browser. Slower, and
   Cloudflare-protected publishers block it, so it is off by default.
 - `--accept-xml` — stop at Springer's XML instead of looking further for a PDF
@@ -78,6 +84,62 @@ Options:
 
 Exit codes: 0 = success (PDF path on stdout), 1 = failure, 2 = opened in browser for manual
 download, 3 = XML full text only, with `--accept-xml`. stdout only ever carries a verified PDF.
+
+### Zotero
+
+Each run reports the personal library's state on stderr, whichever route supplies the PDF:
+`ZOTERO=in-library key=<key> pdf=yes|no`, `ZOTERO=not-in-library` or `ZOTERO=unavailable`.
+Here `pdf=yes` means a PDF attachment is available on this machine. Library searches include
+all result pages, and prefer a personal-library copy before consulting group libraries.
+
+**When to pass `--add-to-zotero`:** the user asked for this paper, for its content. Do not pass
+it for batches, `--doi-file` runs, `check-claim`, or papers fetched only to verify a citation.
+If unsure, leave it off and name the paper in your reply so the user can ask.
+
+What it does, in the personal library only:
+
+- An item with this DOI, or the same title within two years, that has a local PDF: nothing.
+- Such an item without a local PDF: attaches the PDF to it and leaves its metadata alone,
+  removing a stale `needs-pdf` tag after a successful attachment.
+- No such item: creates one from doi.org's metadata in the `Agent inbox` collection, tagged
+  `agent-added`, with the PDF attached.
+- No PDF was found and no matching item exists: creates the record anyway, tagged
+  `needs-pdf`. An existing item is left alone. The run still exits 1 (or 3 if XML was found).
+
+The result is a `ZOTERO=already|attached|added|in-library-no-pdf key=<key> pdf=yes|no` line, or
+`ZOTERO=not-added (<reason>)`. A failed add never changes the exit code or the PDF on stdout.
+Quote the retry command from that line when Zotero was closed.
+
+It needs Zotero 10+, open on this machine, with Settings ▸ Advanced ▸ *Allow other applications
+on this computer to communicate with Zotero*. The first add opens a dialog in Zotero, which waits
+up to 5 minutes for *Always Allow*; the key is kept in `~/.claude/zotero_local_key.json`.
+On a machine without Zotero the library step is skipped and adds report `not-added`.
+
+**`--zotero-find-pdf`**, with `--add-to-zotero`, runs Zotero's *Find Available PDF* on that item
+when the run found no PDF. It uses every lookup configured in the user's Zotero, including custom
+resolvers, and needs the plugin in `zotero-plugin/` ([install steps](zotero-plugin/README.md)). Do not pass
+it if you know that Zotero has a custom resolver that breaks copyright, such as Sci-Hub or Anna's
+Archive: the plugin does not filter them, and that use is not allowed. Do not trigger the feature
+any other way, and do not read or change the user's resolver setting.
+
+A new file is checked like any other PDF. If it passes, it goes to stdout and the caches, the run
+exits 0 and the item loses `needs-pdf`. Otherwise it is removed from the library and reaches no
+cache. A failed removal leaves `agent-added` on the item so it can be found for manual cleanup.
+The search allows four minutes, plus up to five minutes for first-time authorization.
+The outcome is one stderr line, and nothing here fails
+the run:
+
+| `ZOTERO_FIND_PDF=` | Meaning |
+|---|---|
+| `found key=<key> attachment=<key> via=<method>` | Verified PDF added |
+| `rejected key=<key> attachment=<key> via=<method> removed=yes\|no (<reason>)` | Failed the check. On `removed=no`, tell the user which attachment to delete |
+| `none` | Zotero looked and found nothing |
+| `not-installed` | The plugin is not in Zotero |
+| `zotero-closed` | Zotero is closed, or this machine has none |
+| `skipped (<reason>)` | No `--add-to-zotero`, or the item could not be added |
+| `not-eligible` | The item already has a file, or has no DOI, URL or PMCID |
+| `busy`, `timeout` | Another lookup is running, or this one ran too long; the plugin attempts to discard a late file |
+| `not-authorised`, `local-api-off`, `unsupported`, `item-not-found`, `error` | See the reason in the line, if any |
 
 ### Publisher APIs
 
@@ -386,7 +448,48 @@ Keys are read from the environment, then from `~/.claude/api_keys.env`.
 
 ## Cache
 
-Downloaded PDFs and Springer's XML are cached in `~/.claude/cache/pdfs/` (MD5 of DOI). Use
-`--force` to re-download.
+Every machine has one local cache, `~/.claude/cache/pdfs/`, named by the MD5 of the lowercase DOI.
+Each verified PDF and Springer XML also goes to a private R2 bucket under `paper-cache/`, with
+the same file name and the route it came from as metadata, so any device can reuse it.
+`chrome_cdp_download.py` checks the local cache, Zotero and R2 before launching Chrome,
+and stores verified browser downloads in both caches. With `--no-verify` it neither restores
+nor shares cached files. `institutional_fetch.py` runs the requested browser route directly,
+writes verified output to the local cache by default (or `--out`), and shares it in R2.
+Use `download_paper.py --force` to bypass cached copies and replace the shared copy.
+Legacy PDF cache names are migrated to the lowercase key on first use when the DOI's original
+case is supplied. Existing local cache entries are trusted; copies restored from Zotero or R2
+are checked again. Shared XML is checked for the DOI, title (when available) and a full-text body.
+
+The R2 step needs `PAPER_CACHE_R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
+`R2_ENDPOINT` (`PAPER_CACHE_R2_PREFIX` overrides `paper-cache`). Without them it is skipped. The
+bucket must never have a public URL, because it can hold paywalled PDFs. Missing settings or
+failed client setup disable the R2 step. A transfer error is logged and switches it off for that
+run without failing an otherwise successful download. Concurrent uploads preserve an existing
+object unless replacement was explicitly requested, using R2's
+[conditional writes](https://developers.cloudflare.com/r2/api/s3/extensions/).
+
+Seed or harvest only when the user asks to populate the shared cache; an ordinary paper
+request does not authorize scanning and uploading other files.
+
+`$SKILL_DIR/seed_shared_cache.py` uploads a machine's existing skill cache. It trusts those
+already-verified entries, skips objects already in R2, and never renames or deletes local files.
+Where it recovers the DOI behind a legacy name, it uploads under the lowercase key.
+
+`$SKILL_DIR/harvest_pdfs.py <folder>...` collects papers scattered across a machine into the same bucket,
+so they need not be fetched again. A file qualifies only if a DOI from its name or front pages
+passes the identity check against Crossref. Files are not moved or changed, each upload carries
+`route=harvest-<device>`, and `harvest-ledger.jsonl` in the cache folder lets a re-run skip
+successful, unchanged files. Failed uploads, failed checks, interrupted records and changed
+files are retried. `--report results.jsonl` adds a report without replacing the resume ledger.
+`--dry-run` checks files and reports `would-upload` without uploading or using the ledger;
+it still reads R2 and Crossref. `--sample N` and `--workers N` limit the sample and concurrency.
+`--zotero` also reads stored and absolute linked PDFs from `~/Zotero` through a read-only
+SQLite connection, including committed changes while Zotero is open, and excludes the bin.
+It is intended for the default Zotero data directory; ordinary DOI lookups use the local API.
+
+Run the isolated regression suite from the repository root with
+`uv run --no-project --with pytest --with requests pytest -q download-paper`.
+The tests replace Zotero, R2 and the local cache with temporary stand-ins.
+
 Web-search results live in `~/.claude/cache/pdfs/web-search/` (MD5 of the query) for a week;
 delete that folder to search afresh.

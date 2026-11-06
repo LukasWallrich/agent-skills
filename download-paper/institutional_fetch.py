@@ -4,6 +4,7 @@
 # dependencies = [
 #   "fetchpdf @ git+https://github.com/The-Metascience-Observatory/fetchpdf@82a4c474178a3e4245da82542c3a25434674e48e",
 #   "requests",
+#   "boto3",
 # ]
 # ///
 """Fetch a paywalled PDF through the user's logged-in, visible Chrome (macOS).
@@ -53,8 +54,9 @@ Gotchas learned the hard way:
     everything here goes through the real, visible browser.
 """
 from __future__ import annotations
-import argparse, base64, hashlib, json, os, re, subprocess, sys, time
+import argparse, base64, json, os, re, subprocess, sys, time
 from pathlib import Path
+import tempfile
 from urllib.parse import quote
 
 import fcntl
@@ -486,6 +488,25 @@ def _identity():
     return download_paper.crossref_metadata, download_paper.verify_identity
 
 
+def save_verified(data, doi, out):
+    """Check a temporary copy before replacing an existing output or cache entry."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=out.parent, prefix="part-", suffix=".pdf", delete=False) as f:
+        part = Path(f.name)
+    try:
+        part.write_bytes(data)
+        crossref_metadata, verify_identity = _identity()
+        meta = crossref_metadata(doi)
+        verdict = verify_identity(str(part), doi, meta.get("title"), meta.get("pages"))
+        if not verdict.ok:
+            print(f"{verdict.state}: {verdict.reason}", file=sys.stderr)
+            return False
+        part.replace(out)
+        return True
+    finally:
+        part.unlink(missing_ok=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("mode", nargs="?", default="fetch")
@@ -500,6 +521,8 @@ def main():
         return
     if not args.doi:
         raise SystemExit("--doi is required (EBSCO is searched by DOI, not title).")
+    import download_paper as dp
+    args.doi = dp.clean_doi(args.doi)
 
     profile = os.environ.get("INSTITUTION_EBSCO_PROFILE", "")
     if args.ebsco and not profile:
@@ -521,15 +544,10 @@ def main():
         raise SystemExit(1)
 
     CACHE.mkdir(parents=True, exist_ok=True)
-    out = Path(args.out) if args.out else CACHE / (hashlib.md5(args.doi.encode()).hexdigest() + ".pdf")
-    out.write_bytes(data)
-    crossref_metadata, verify_identity = _identity()
-    meta = crossref_metadata(args.doi)
-    verdict = verify_identity(str(out), args.doi, meta.get("title"), meta.get("pages"))
-    if not verdict.ok:
-        out.unlink()
-        print(f"{verdict.state}: {verdict.reason}", file=sys.stderr)
+    out = Path(args.out) if args.out else Path(dp.doi_to_cache_path(args.doi, str(CACHE)))
+    if not save_verified(data, args.doi, out):
         raise SystemExit(1)
+    dp.share_pdf(str(out), args.doi, "chrome-ebsco" if args.ebsco else "chrome-cookies")
     print(out)            # success: path on stdout (matches download_paper.py)
 
 

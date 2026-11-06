@@ -5,11 +5,16 @@
 #   "fetchpdf @ git+https://github.com/The-Metascience-Observatory/fetchpdf@82a4c474178a3e4245da82542c3a25434674e48e",
 #   "requests",
 #   "ddgs",
+#   "boto3",
 # ]
 # ///
 """Download an academic PDF by DOI, and check that it is that DOI's paper.
 
-The steps:
+Before downloading, it looks in the local cache, the user's Zotero libraries (local
+API) and the shared R2 cache. Every PDF it verifies goes to the local and R2 caches.
+Only --add-to-zotero adds to the library.
+
+The download steps:
   A. `fetchpdf.fetch_pdf` — the open-access chain (OpenAlex, Unpaywall, PMC,
      Crossref links, preprint servers, repository landing pages, publisher
      routes). Every PDF it writes is checked against the requested record.
@@ -43,6 +48,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import ssl
 import sys
 import tempfile
@@ -55,6 +61,8 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import institutional_fetch as chrome
+from r2_cache import R2Cache
+from zotero_local import NEEDS_PDF_TAG, TAG as ZOTERO_TAG, ZoteroError, ZoteroLocal
 
 DEFAULT_CACHE_DIR = os.path.expanduser("~/.claude/cache/pdfs")
 DEFAULT_EMAIL = "unpaywall@impactstory.org"
@@ -114,12 +122,19 @@ def wait_for_turn(stamp, spacing):
 
 
 def clean_doi(doi):
-    doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi)
+    doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi.strip(), flags=re.I)
     doi = re.sub(r"^doi:", "", doi, flags=re.IGNORECASE)
     return doi.strip()
 
 
 def doi_to_cache_path(doi, cache_dir):
+    """DOIs are case-insensitive, so the key is too. `clean_doi` keeps the case for URLs."""
+    md5 = hashlib.md5(clean_doi(doi).lower().encode()).hexdigest()
+    return os.path.join(cache_dir, f"{md5}.pdf")
+
+
+def legacy_cache_path(doi, cache_dir):
+    """Where entries keyed before the key was lowercased live."""
     md5 = hashlib.md5(clean_doi(doi).encode()).hexdigest()
     return os.path.join(cache_dir, f"{md5}.pdf")
 
@@ -304,7 +319,10 @@ def jats_article(body, doi, title):
             log("  Springer OA: the record has no full-text body")
             return None
         found = article.find("front/article-meta/title-group/article-title")
-        if title and found is not None:
+        if found is None or not "".join(found.itertext()).strip():
+            log("  Springer OA: the record has no article title")
+            return None
+        if title:
             with contextlib.redirect_stdout(sys.stderr):
                 from fetchpdf.retrieval._util import matched_fraction, squash
 
@@ -633,6 +651,174 @@ def browser_download(doi, blocked_links, tmp_path, title, pages, ebsco_profile):
 # Orchestration
 # =============================================================================
 
+_shared = {}
+FIND_PDF_HINTS = {
+    "not-installed": "the Find PDF API plugin is not in Zotero; see zotero-plugin/README.md",
+    "zotero-closed": "open Zotero and run this again",
+    "local-api-off": "switch on Settings > Advanced > Allow other applications on this computer "
+                     "to communicate with Zotero",
+    "unsupported": "this Zotero version lacks what the plugin relies on",
+    "not-eligible": "the item already has a file, or has no DOI, URL or PMCID",
+}
+
+
+def r2_cache():
+    """The shared bucket, or None when this machine has no settings for it."""
+    if "r2" not in _shared:
+        _shared["r2"] = R2Cache.from_keys(load_key_file())
+    return _shared["r2"]
+
+
+def zotero():
+    """The local Zotero API, or None when it cannot be reached."""
+    if "zotero" not in _shared:
+        _shared["zotero"] = ZoteroLocal.connect()
+    return _shared["zotero"]
+
+
+def share_pdf(path, doi, route, overwrite=False):
+    """Upload a verified PDF to the shared cache. A failure only leaves it local."""
+    r2 = r2_cache()
+    if r2 and r2.store(path, os.path.basename(doi_to_cache_path(doi, "")), overwrite=overwrite,
+                       doi=clean_doi(doi).lower(), route=route, fetched=time.strftime("%Y-%m-%d")):
+        log(f"Stored in the shared cache ({route})")
+
+
+def find_existing(doi, title, pages, tmp_path):
+    """Fill tmp_path from a copy we already hold. Returns its source, or None.
+
+    A library PDF or bucket object still has to pass the identity check: neither
+    is known to carry this DOI's paper until it has.
+    """
+    zot = zotero()
+    if zot:
+        try:
+            for library, path in zot.library_pdfs(doi):
+                with open(path, "rb") as f:
+                    if accept_bytes(f.read(), tmp_path, doi, title, pages, f"Zotero {library}"):
+                        return "zotero"
+        except (OSError, requests.RequestException, ValueError) as error:
+            log(f"Zotero library lookup failed: {error}")
+    r2 = r2_cache()
+    if r2:
+        names = {os.path.basename(p(doi, "")) for p in (doi_to_cache_path, legacy_cache_path)}
+        for name in sorted(names):
+            source = r2.fetch(name, tmp_path)
+            if source is None:
+                continue
+            verdict = verify_identity(tmp_path, doi, title, pages)
+            if verdict.ok:
+                log(f"Found in the shared cache (first fetched via {source.get('route', 'unknown')})")
+                return "r2"
+            log(f"Shared cache: rejected ({verdict.state}) {verdict.reason}")
+            os.unlink(tmp_path)
+    return None
+
+
+def doi_csl(doi):
+    """doi.org's CSL-JSON, which covers Crossref and DataCite DOIs alike."""
+    body = fetch_url(f"https://doi.org/{quote(clean_doi(doi), safe='/')}", timeout=20,
+                     accept="application/vnd.citationstyles.csl+json")
+    try:
+        return json.loads(body) if body else None
+    except ValueError:
+        return None
+
+
+def report_library_status(doi):
+    """State on stderr whether the personal library holds this DOI."""
+    zot = zotero()
+    if not zot:
+        log("ZOTERO=unavailable")
+        return
+    try:
+        key, has_pdf = zot.status(doi)
+    except (requests.RequestException, ValueError) as error:
+        log(f"Zotero library check failed: {error}")
+        log("ZOTERO=unavailable")
+        return
+    log(f"ZOTERO=in-library key={key} pdf={'yes' if has_pdf else 'no'}" if key else "ZOTERO=not-in-library")
+
+
+def add_to_zotero(doi, pdf_path):
+    """Add the paper to the personal library. A failure leaves the download's result alone."""
+    zot = zotero()
+    if not zot:
+        log(f"ZOTERO=not-added (Zotero not reachable). With Zotero open, run: "
+            f"{shlex.quote(os.path.abspath(__file__))} --doi {shlex.quote(clean_doi(doi))} --add-to-zotero")
+        return
+    try:
+        action, key = zot.add_paper(doi, pdf_path, doi_csl)
+    except (ZoteroError, requests.RequestException, OSError, ValueError) as error:
+        log(f"ZOTERO=not-added ({error})")
+        return
+    log(f"ZOTERO={action} key={key} pdf={'yes' if pdf_path or action == 'already' else 'no'}")
+    return key
+
+
+def zotero_find_pdf(key, doi, title=None, cache_dir=DEFAULT_CACHE_DIR):
+    """Ask Zotero to find a PDF for this item. Returns the cached path of a verified one, or None.
+
+    A file from Zotero is unverified until it passes the identity check. One that fails is
+    taken back out of the library and never reaches the local or shared cache.
+    """
+    zot = zotero()
+    if not zot:
+        log("ZOTERO_FIND_PDF=zotero-closed")
+        return None
+    if not key:
+        log("ZOTERO_FIND_PDF=skipped (the item was not added)")
+        return None
+    log("Asking Zotero's Find Available PDF, which can take a few minutes...")
+    result = zot.find_available_pdf(key)
+    state = result["state"]
+    if state != "found":
+        detail = FIND_PDF_HINTS.get(state) or result.get("message")
+        log(f"ZOTERO_FIND_PDF={state}" + (f" ({detail})" if detail else ""))
+        return None
+
+    attachment = result.get("attachmentKey")
+    via = (result.get("methodsTried") or ["unknown"])[-1]
+    doi = clean_doi(doi)
+    cache_path = doi_to_cache_path(doi, cache_dir)
+    tmp_path = None
+    rejected = None
+    try:
+        path = zot.file_path(attachment)
+        if result.get("contentType") != "application/pdf":
+            rejected = f"Zotero found a {result.get('contentType')} file, not a PDF"
+        elif not path:
+            rejected = "the attachment's file is not on this machine"
+        else:
+            meta = crossref_metadata(doi)
+            os.makedirs(cache_dir, exist_ok=True)
+            handle, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix="part-", suffix=".pdf")
+            os.close(handle)
+            with open(path, "rb") as f:
+                ok = accept_bytes(f.read(), tmp_path, doi, meta.get("title") or title,
+                                  meta.get("pages"), "Zotero Find Available PDF")
+            if not (ok and validate_pdf(tmp_path)):
+                rejected = "it did not pass the identity check"
+        if not rejected:
+            os.replace(tmp_path, cache_path)
+            share_pdf(cache_path, doi, "zotero-find-pdf")
+            zot.remove_tag(key, NEEDS_PDF_TAG)
+            log(f"ZOTERO_FIND_PDF=found key={key} attachment={attachment} via={via}")
+            return cache_path
+    except Exception as error:  # an unchecked file must not stay, whatever went wrong
+        rejected = f"the check failed: {error}"
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    removed = zot.delete_item(attachment)
+    if removed and result.get("itemTagged"):
+        zot.remove_tag(key, ZOTERO_TAG)
+    log(f"ZOTERO_FIND_PDF=rejected key={key} attachment={attachment} via={via} "
+        f"removed={'yes' if removed else 'no'} ({rejected})")
+    return None
+
+
 def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
                    force=False, use_playwright=False, use_browser=True,
                    ebsco_profile="", accept_xml=False):
@@ -644,6 +830,9 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
     """
     doi = clean_doi(doi)
     cache_path = doi_to_cache_path(doi, cache_dir)
+    legacy_path = legacy_cache_path(doi, cache_dir)
+    if legacy_path != cache_path and not os.path.exists(cache_path) and os.path.exists(legacy_path):
+        os.replace(legacy_path, cache_path)
     if not force and validate_pdf(cache_path):
         log("Found in cache")
         return cache_path, []
@@ -654,6 +843,7 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
         return xml_path, []
 
     os.makedirs(cache_dir, exist_ok=True)
+    r2 = r2_cache()
     meta = crossref_metadata(doi)
     query_title = title or meta.get("search_title")
     candidates = []
@@ -664,12 +854,33 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
     os.close(handle)
     os.unlink(tmp_path)
 
+    def keep(route):
+        os.replace(tmp_path, cache_path)
+        share_pdf(cache_path, doi, route, overwrite=force)
+
     blocked = []
     try:
+        if not force:
+            found = find_existing(doi, meta.get("title") or title, meta.get("pages"), tmp_path)
+            if found:
+                os.replace(tmp_path, cache_path)
+                if found == "zotero":
+                    share_pdf(cache_path, doi, "zotero")
+                return cache_path, candidates
+            if accept_xml and r2 and r2.fetch(os.path.basename(xml_path), tmp_path) is not None:
+                with open(tmp_path, "rb") as f:
+                    article = jats_article(f.read(), doi, meta.get("title") or title)
+                if article is not None:
+                    os.replace(tmp_path, xml_path)
+                    log("Found verified XML in the shared cache")
+                    log(f"FULLTEXT_XML={xml_path}")
+                    return xml_path, []
+                os.unlink(tmp_path)
+
         log(f"Fetching {doi} via fetchpdf...")
         if fetchpdf_download(doi, tmp_path, email, use_playwright,
                              meta.get("title") or title, meta.get("pages")):
-            os.replace(tmp_path, cache_path)
+            keep("fetchpdf")
             log("Downloaded via fetchpdf")
             return cache_path, candidates
 
@@ -679,7 +890,7 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
             log("Trying Wiley's text-and-data-mining API...")
             if accept_bytes(wiley_tdm_pdf(doi, keys["WILEY_TDM_TOKEN"], cache_dir), tmp_path,
                             doi, meta.get("title") or title, meta.get("pages"), "Wiley TDM"):
-                os.replace(tmp_path, cache_path)
+                keep("wiley-tdm")
                 log("Downloaded via Wiley's TDM API")
                 return cache_path, candidates
         if (keys.get("SPRINGER_OA_API_KEY") and prefix in SPRINGER_NATURE_PREFIXES
@@ -689,6 +900,9 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
                                     keys["SPRINGER_OA_API_KEY"], cache_dir, force)
             if found:
                 log(f"FULLTEXT_XML={found}")
+                if r2:
+                    r2.store(found, os.path.basename(found), overwrite=force,
+                             doi=clean_doi(doi).lower(), route="springer-oa")
                 if accept_xml:
                     return found, candidates
 
@@ -697,7 +911,7 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
             accepted, web_blocked = web_download(
                 doi, meta.get("title") or title, tmp_path, meta.get("pages"), cache_dir)
             if accepted:
-                os.replace(tmp_path, cache_path)
+                keep("web-search")
                 log(f"Downloaded via web search: {accepted}")
                 return cache_path, candidates
             candidates += [(u, "web-search link, no PDF by plain HTTP") for u in web_blocked]
@@ -712,7 +926,7 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
             accepted, blocked, wrong = walk_pdf_links(
                 links, tmp_path, doi, meta.get("title") or title, meta.get("pages"))
             if accepted:
-                os.replace(tmp_path, cache_path)
+                keep("google-scholar")
                 log(f"Downloaded via Google Scholar: {accepted}")
                 return cache_path, candidates
             candidates += [(u, "Scholar link, no PDF by plain HTTP") for u in blocked]
@@ -727,7 +941,7 @@ def download_paper(doi, title=None, cache_dir=DEFAULT_CACHE_DIR, email=None,
             kept = browser_download(doi, blocked, tmp_path, meta.get("title") or title,
                                     meta.get("pages"), ebsco_profile)
             if kept:
-                os.replace(tmp_path, cache_path)
+                keep("chrome")
                 log(f"Downloaded via Chrome: {kept}")
                 return cache_path, []
         else:
@@ -756,6 +970,14 @@ def main():
     parser.add_argument("--accept-xml", action="store_true",
                         help="Stop at Springer's JATS XML rather than look further for a "
                              "PDF: exit 3, with the path on stderr as FULLTEXT_XML=<path>")
+    parser.add_argument("--add-to-zotero", action="store_true",
+                        help="Add the paper to the personal Zotero library: the Agent inbox "
+                             "collection, or the existing item if it has no PDF. For a paper the "
+                             "user asked for, never for a batch")
+    parser.add_argument("--zotero-find-pdf", action="store_true",
+                        help="With --add-to-zotero, when no PDF was found, ask Zotero's Find "
+                             "Available PDF, using the resolvers set up in Zotero. Needs the "
+                             "plugin in zotero-plugin/; without it, only logs a line")
     parser.add_argument("--open", action="store_true",
                         help="On failure, open the publisher page in the browser")
     args = parser.parse_args()
@@ -768,6 +990,7 @@ def main():
         if keys.get(file_name):
             os.environ.setdefault(fetchpdf_name, keys[file_name])
 
+    report_library_status(args.doi)
     path, candidates = download_paper(
         doi=args.doi,
         title=args.title,
@@ -779,6 +1002,16 @@ def main():
         ebsco_profile=keys.get("INSTITUTION_EBSCO_PROFILE", ""),
         accept_xml=args.accept_xml,
     )
+
+    if args.add_to_zotero:
+        has_pdf = bool(path and path.endswith(".pdf"))
+        key = add_to_zotero(args.doi, path if has_pdf else None)
+        if args.zotero_find_pdf and not has_pdf:
+            found = zotero_find_pdf(key, args.doi, args.title, args.cache_dir)
+            if found:
+                path, candidates = found, []
+    elif args.zotero_find_pdf:
+        log("ZOTERO_FIND_PDF=skipped (it needs --add-to-zotero)")
 
     if path and path.endswith(".xml"):
         sys.exit(3)
