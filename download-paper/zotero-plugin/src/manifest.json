@@ -1,0 +1,15 @@
+{
+  "manifest_version": 2,
+  "name": "Find PDF API",
+  "version": "0.1.1",
+  "description": "Exposes Find Available PDF for one item over Zotero's local HTTP server, for local tools holding a local API key.",
+  "homepage_url": "https://github.com/LukasWallrich/agent-skills/tree/main/download-paper/zotero-plugin",
+  "applications": {
+    "zotero": {
+      "id": "find-pdf-api@agent-skills.local",
+      "update_url": "https://raw.githubusercontent.com/LukasWallrich/agent-skills/main/download-paper/zotero-plugin/update.json",
+      "strict_min_version": "10.0",
+      "strict_max_version": "10.*"
+    }
+  }
+}

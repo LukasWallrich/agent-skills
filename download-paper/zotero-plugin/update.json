@@ -1,0 +1,19 @@
+{
+  "addons": {
+    "find-pdf-api@agent-skills.local": {
+      "updates": [
+        {
+          "version": "0.1.1",
+          "update_link": "https://raw.githubusercontent.com/LukasWallrich/agent-skills/main/download-paper/zotero-plugin/dist/find-pdf-api-0.1.1.xpi",
+          "update_hash": "sha256:f03ca11ea7a76c0fa4fa153cbc4e0481b71af4f6fea64d7232c2eb38a2b11c8d",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "10.0",
+              "strict_max_version": "10.*"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
