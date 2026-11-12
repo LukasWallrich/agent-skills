@@ -24,6 +24,14 @@ once instead of leaving stale vintages behind.
 
 ## Skills
 
+### `pdf-evidence-crops`
+
+Crops source-PDF evidence (a table cell or a quoted passage) into page images with
+highlight boxes, for audit and coding-check pages. Finds a cell by intersecting the row
+label with the column header, falls back to Tesseract OCR for scans and embedded table
+images, handles rotated tables, and reports a status per item instead of guessing when an
+occurrence is ambiguous. Writes a labelled contact sheet for visual checking.
+
 ### `request-secret`
 
 Requests API keys, tokens and passwords in a masked macOS dialog or a private
