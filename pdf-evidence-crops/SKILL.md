@@ -11,7 +11,9 @@ column header (or the column's number in a correlation matrix), uses the text la
 value is in it, and falls back to Tesseract OCR for scans and for tables embedded as images. It
 handles rotated pages and sideways tables, minus-sign variants, stars and footnote letters,
 decimal commas, and `0.83` printed as `.83`. When it cannot tell which occurrence is meant, it
-says so rather than drawing a box.
+lists the candidates rather than drawing a box. When it matched the digits but not the exact
+printed sign or decimal point, it re-reads the value by 600 dpi OCR and marks the item
+`unverified` unless that confirms it.
 
 ## Steps
 
@@ -25,7 +27,7 @@ says so rather than drawing a box.
    | `row`, `col` | the row label and the column header as printed; numbering (`2. Social policies`) is fine, and for a correlation matrix the column's number is matched against the header row |
    | `clip` | optional `[x0, y0, x1, y1]` in points of the page as displayed (PyMuPDF `page.rect`, after any `/Rotate`); omitted = from the table caption to two lines below the located row |
    | `rotate` | optional extra clockwise rotation (0/90/180/270); omitted = detected from the text direction |
-   | `img` | output file name (default `<id>.jpg`); items sharing an `img` and `clip` share one crop |
+   | `img` | output file name (default `<id>.jpg`); items sharing an `img` and `clip` share one crop (an item whose crop differs is written to `<img>-<id>.jpg`; `crops.json` in the output folder records which crop each file holds, so a rerun of some items never overwrites an image that others use) |
 
    A numeric quote (digits plus at most a statistic letter) is located as a cell; anything with
    words is located as a passage.
@@ -37,10 +39,13 @@ says so rather than drawing a box.
      --out shots --preview preview --sheet preview/sheet.jpg --grid grid --results results.json
    ```
 
-3. **Verify every crop.** Open the contact sheet (`--sheet`; each tile is labelled with its id
-   and status) and look at each tile. The step is done when every `cell`, `row`, `column`,
-   `value` and `text` tile shows its red box on the quoted value or passage, and every other
-   status is either fixed (step 4) or listed for the reader as unhighlighted.
+3. **Review the flagged crops.** Each result has `review`: it is `false` only for a `cell`,
+   `row`, `column` or `text` match without notes, i.e. an exact match whose row and column (or
+   passage) the code confirmed. The contact sheet (`--sheet`) holds just the `review: true`
+   previews, each labelled with id, status and notes; `--sheet-all` adds the rest. Look at every
+   tile on the sheet. The step is done when each shows its red box on the quoted value or
+   passage, or is fixed (step 4), or is listed for the reader as unhighlighted. For a new kind
+   of document, spot-check a few unflagged previews too.
 
 4. **Fix what failed**, using the `status` and `notes` in `results.json`, then rerun only those
    items:
@@ -50,30 +55,31 @@ says so rather than drawing a box.
    | `cell` | row and column both matched | — |
    | `row` / `column` | one axis matched, the other not | check the box; correct the other label to its printed wording |
    | `value` | the value occurs once on the page; neither axis confirmed | unreliable: a two-digit value often recurs in another cell or a note. Show the box only after checking it by eye |
-   | `text` | passage matched (`notes` flags a fuzzy match) | — |
-   | `ambiguous` | the value occurs several times and the labels do not decide | give the row/column label as printed, or a tighter `clip` |
+   | `text` | passage matched, with the same numbers and negations (`notes` flags a near match) | — |
+   | `unverified` | boxed, but the printed value or passage differs from the quote (sign, decimal point, a number, "not") | look at it: correct the quote, or report the discrepancy |
+   | `ambiguous` | the value or passage occurs several times and the labels do not decide | the preview numbers the `candidates` in orange: add `"choose": k`; or give the row/column label as printed, or a tighter `clip` |
    | `not_found` | value or passage not on the page (or the neighbours) | check `page`; quote the value exactly as printed; for scans, OCR may misread it |
-| `outside_clip` | located, but outside the supplied `clip` | widen the clip, or drop it for the automatic one; a wrong match also lands here |
+   | `outside_clip` | located, but (partly) outside the supplied `clip` | widen the clip, or drop it for the automatic one; a wrong match also lands here |
    | `error` | the item could not be processed | read `notes` (often a missing PDF) |
-| `picked` / `picked_unread` / `manual` | placed from a visual pick (step 5) | check the preview |
+   | `picked` / `picked_unread` / `manual` | placed by `choose` or a visual pick (step 5) | check the preview |
 
-   A note "minus sign not in the text layer" means the absolute value was matched: confirm the
-   sign by eye, since extraction often drops minus signs.
-
-5. **Pick the rest by eye.** For items still `ambiguous`, `not_found` or `outside_clip` (labels
+5. **Pick the rest by eye.** For items still `not_found` or `outside_clip`, or `ambiguous`
+   without the right candidate (labels
    that repeat, headers that differ only in a prefix, unreadable print, values in figures), rerun
    them with `--grid grid/`. That writes each crop with a labelled 5% grid. View it, find the
    cell by reading the table, and add `"near": [x%, y%]` (the centre of the value) to the item.
    On rerun the box snaps to the word there that carries the quoted digits (status `picked`),
-   using the text layer, page OCR, or a 600 dpi OCR window around the point. If OCR cannot read
-   the value, the box goes on the numeric token under the point (`picked_unread`). As a last
+   using the text layer, page OCR, or a 600 dpi OCR window around the point; a word with the
+   quoted digits but another sign or decimal point gives `unverified`. If OCR cannot read the
+   value, the box goes on the numeric token under the point (`picked_unread`). As a last
    resort, `"box": [left%, top%, width%, height%]` is used as given (`manual`). Picks read off
    the grid are often a row out, so check each new preview before you count the item as done.
 
 ## Output
 
 `results.json` holds, per item: `img`, `page` (where it was found), `rotate`, `clip`, `boxes`,
-`status`, `source` (`text` or `ocr`) and `notes`. `boxes` are `[left, top, width, height]` in
+`status`, `source` (`text` or `ocr`), `notes`, `review`, and for `ambiguous` items
+`candidates` (one list of boxes per candidate, numbered from 1 for `choose`). `boxes` are `[left, top, width, height]` in
 percent of the written image: value boxes first, then the row label for table cells. Overlay them
 on a relatively positioned wrapper:
 
